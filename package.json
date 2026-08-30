@@ -1,0 +1,9 @@
+{
+  "name": "echobound",
+  "version": "2.0.0",
+  "private": true,
+  "description": "ECHObound — Édition Codex Professionnelle 2.0.0, standalone récupéré depuis la conversation source.",
+  "scripts": {
+    "test": "node --test tests/smoke.test.mjs"
+  }
+}
