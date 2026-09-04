@@ -1,0 +1,5 @@
+* text=auto eol=lf
+
+# Preserve the verified professional standalone byte-for-byte on every OS.
+ECHObound_standalone.html text eol=lf
+index.html text eol=lf

@@ -1,0 +1,32 @@
+{
+  "id": "./",
+  "name": "ECHObound — La Cité des Échos",
+  "short_name": "ECHObound",
+  "description": "RPG original de lien, de recrutement et de reconstruction d’une cité interdimensionnelle.",
+  "lang": "fr-FR",
+  "dir": "ltr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": [
+    "window-controls-overlay",
+    "standalone",
+    "minimal-ui"
+  ],
+  "orientation": "landscape",
+  "background_color": "#070912",
+  "theme_color": "#070912",
+  "categories": [
+    "games",
+    "entertainment"
+  ],
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "assets/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

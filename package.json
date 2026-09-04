@@ -2,8 +2,12 @@
   "name": "echobound",
   "version": "2.0.0",
   "private": true,
+  "type": "module",
   "description": "ECHObound — Édition Codex Professionnelle 2.0.0, standalone récupéré depuis la conversation source.",
   "scripts": {
-    "test": "node --test tests/smoke.test.mjs"
+    "build": "node scripts/build.mjs",
+    "test": "node --test",
+    "test:pwa": "node --check sw.js && node --check src/platform.js && node scripts/validate-pwa.mjs",
+    "check": "npm run test && npm run test:pwa && npm run build"
   }
 }

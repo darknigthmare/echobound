@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title description">
+  <title id="title">Sceau d’ECHObound</title>
+  <desc id="description">Un cœur lumineux relié à trois échos orbitaux dans une cité nocturne.</desc>
+  <defs>
+    <radialGradient id="background" cx="50%" cy="44%" r="72%">
+      <stop offset="0" stop-color="#1d2748" />
+      <stop offset="0.58" stop-color="#0c1123" />
+      <stop offset="1" stop-color="#070912" />
+    </radialGradient>
+    <radialGradient id="heart" cx="42%" cy="34%" r="70%">
+      <stop offset="0" stop-color="#f2ffff" />
+      <stop offset="0.24" stop-color="#78f3ff" />
+      <stop offset="0.66" stop-color="#7268ff" />
+      <stop offset="1" stop-color="#352970" />
+    </radialGradient>
+    <linearGradient id="echo" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7ff9ff" />
+      <stop offset="0.52" stop-color="#7d83ff" />
+      <stop offset="1" stop-color="#d76fff" />
+    </linearGradient>
+    <filter id="glow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="10" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="512" height="512" fill="url(#background)" />
+  <circle cx="256" cy="256" r="186" fill="none" stroke="#242d52" stroke-width="18" />
+  <circle cx="256" cy="256" r="151" fill="none" stroke="#53629a" stroke-width="3" stroke-dasharray="3 14" opacity="0.8" />
+
+  <g fill="none" stroke="url(#echo)" stroke-linecap="round">
+    <path d="M256 104C342 104 408 170 408 256S342 408 256 408 104 342 104 256 170 104 256 104Z" stroke-width="11" opacity="0.72" />
+    <path d="M169 171c44-43 130-57 189-2" stroke-width="7" opacity="0.42" />
+    <path d="M155 334c55 55 146 55 202 1" stroke-width="7" opacity="0.42" />
+  </g>
+
+  <g stroke="url(#echo)" stroke-width="8" stroke-linecap="round" filter="url(#glow)">
+    <path d="M256 155v-41" />
+    <path d="M343 306l36 21" />
+    <path d="M169 306l-36 21" />
+  </g>
+
+  <g fill="url(#echo)" filter="url(#glow)">
+    <circle cx="256" cy="98" r="18" />
+    <circle cx="393" cy="335" r="18" />
+    <circle cx="119" cy="335" r="18" />
+  </g>
+
+  <path d="M256 153c-55 0-99 44-99 99 0 75 99 132 99 132s99-57 99-132c0-55-44-99-99-99Z" fill="#10172e" stroke="url(#echo)" stroke-width="10" />
+  <path d="M256 190c-34 0-61 27-61 61 0 46 61 83 61 83s61-37 61-83c0-34-27-61-61-61Z" fill="url(#heart)" filter="url(#glow)" />
+  <circle cx="256" cy="251" r="19" fill="#f2ffff" opacity="0.94" />
+</svg>
