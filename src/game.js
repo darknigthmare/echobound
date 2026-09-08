@@ -13,6 +13,22 @@ import {
 } from './world-layouts.js';
 import { buildExpeditionAtlas } from './expedition-atlas.js';
 import {
+  CHRONICLE_IDS,
+  MAX_CHRONICLE_PROGRESS,
+  REGIONAL_CHRONICLES,
+  getChronicleByService,
+  getChronicleIntro,
+  getChronicleNode,
+  getChronicleObjective,
+  getChronicleSourceChoice,
+  getChronicleStatus,
+  isChronicleChoiceId,
+} from './regional-chronicles.js';
+import {
+  getObstacleVisual,
+  getSectorVisualSignature,
+} from './sector-visuals.js';
+import {
   CYCLE_LAWS,
   createNextCyclePlan,
   evaluateEvolution,
@@ -608,13 +624,15 @@ import {
   const SAVE_MAP_IDS = new Set(Object.keys(MAPS));
   const SAVE_REGION_IDS = new Set([...REGION_IDS, 'void']);
   const SAVE_ITEM_IDS = new Set(Object.keys(ITEMS));
+  const SAVE_CHRONICLE_IDS = new Set(CHRONICLE_IDS);
   const SAVE_ROOT_KEYS = new Set([
     'version', 'createdAt', 'savedAt', 'difficulty', 'settings', 'playSeconds', 'map',
     'player', 'partner', 'credits', 'inventory', 'recruited', 'flags', 'unlockedMaps',
     'discoveredSectors', 'sectorVisits', 'sanctuaryVisits', 'expeditionChoices',
+    'chronicleProgress', 'chronicleChoices',
     'patrolVictories', 'wins', 'regionWins', 'worldDefeated', 'timeMinutes',
     'lastSleepDay', 'dailyClinicDay', 'expeditionReadyAt', 'expeditionActive',
-    'forgeLevel', 'trainingLevel', 'arenaWins', 'journalSeen', 'finalBossDefeated',
+    'forgeLevel', 'trainingLevel', 'arenaWins', 'arenaEliteRewardClaimed', 'journalSeen', 'finalBossDefeated',
     'newCycleBonus', 'cycleCount', 'cycleModifier', 'cycleAnomalies', 'cycleEchoes',
     'cityProjects', 'achievements', 'contract',
   ]);
@@ -741,6 +759,8 @@ import {
       sectorVisits: {},
       sanctuaryVisits: {},
       expeditionChoices: {},
+      chronicleProgress: {},
+      chronicleChoices: {},
       patrolVictories: [],
       wins: {},
       regionWins: { wastes: 0, hive: 0, fog: 0, foundry: 0, void: 0 },
@@ -753,6 +773,7 @@ import {
       forgeLevel: 0,
       trainingLevel: 0,
       arenaWins: 0,
+      arenaEliteRewardClaimed: false,
       journalSeen: [],
       finalBossDefeated: false,
       newCycleBonus: 0,
@@ -1199,6 +1220,7 @@ import {
       this.gamepadCommandIndex = 0;
       this.lastHudSignature = '';
       this.lastRenderTime = 0;
+      this.visualGradientCache = new Map();
       this.prefer30Fps = navigator.maxTouchPoints > 0 || window.matchMedia?.('(pointer: coarse)').matches || false;
       this.applyAccessibilitySettings();
       this.bindUi();
@@ -1459,6 +1481,28 @@ import {
         && typeof candidate.contract.completed === 'boolean'
         && typeof candidate.contract.claimed === 'boolean'
       );
+      const validChronicles = candidate?.chronicleProgress
+        && typeof candidate.chronicleProgress === 'object'
+        && !Array.isArray(candidate.chronicleProgress)
+        && candidate?.chronicleChoices
+        && typeof candidate.chronicleChoices === 'object'
+        && !Array.isArray(candidate.chronicleChoices)
+        && Object.entries(candidate.chronicleProgress).every(([id, progress]) => (
+          SAVE_CHRONICLE_IDS.has(id)
+          && Number.isInteger(progress)
+          && progress >= 0
+          && progress <= MAX_CHRONICLE_PROGRESS
+        ))
+        && Object.entries(candidate.chronicleChoices).every(([id, choiceId]) => (
+          isChronicleChoiceId(id, choiceId)
+          && candidate.chronicleProgress[id] === MAX_CHRONICLE_PROGRESS
+        ))
+        && CHRONICLE_IDS.every((id) => {
+          const progress = Number(candidate.chronicleProgress[id] || 0);
+          const hasSource = Boolean(getChronicleSourceChoice(REGIONAL_CHRONICLES[id], candidate));
+          return (progress < 1 || hasSource)
+            && (progress !== MAX_CHRONICLE_PROGRESS || isChronicleChoiceId(id, candidate.chronicleChoices[id]));
+        });
       return exactRoot
         && candidate.version === VERSION
         && Boolean(MAPS[candidate.map])
@@ -1473,6 +1517,7 @@ import {
         && candidate.partner.level >= 1
         && rootNumbers.every((key) => finite(candidate[key], 0, key === 'createdAt' || key === 'savedAt' ? Number.MAX_SAFE_INTEGER : SAVE_VALUE_LIMITS.counter))
         && typeof candidate.expeditionActive === 'boolean'
+        && typeof candidate.arenaEliteRewardClaimed === 'boolean'
         && typeof candidate.finalBossDefeated === 'boolean'
         && Object.values(candidate.settings).every((value) => typeof value === 'boolean')
         && numericRecord(candidate.inventory)
@@ -1481,6 +1526,7 @@ import {
         && numericRecord(candidate.worldDefeated)
         && numericRecord(candidate.sectorVisits)
         && numericRecord(candidate.sanctuaryVisits)
+        && validChronicles
         && Object.entries(candidate.flags).every(([key, value]) => (
           key === 'trackedResident'
             ? typeof value === 'string' && hasOwn(RESIDENTS, value)
@@ -1628,6 +1674,8 @@ import {
         sectorVisits: sanitizeNumberRecord(parsed.sectorVisits, { allowedKeys: SAVE_MAP_IDS, min: 0, max: SAVE_VALUE_LIMITS.counter, integer: true }),
         sanctuaryVisits: sanitizeNumberRecord(parsed.sanctuaryVisits, { allowedKeys: WORLD_SAVE_METADATA.sanctuaryIds, min: 0, max: SAVE_VALUE_LIMITS.counter, integer: true }),
         expeditionChoices: sanitizeChoiceRecord(parsed.expeditionChoices, WORLD_SAVE_METADATA.choiceIds),
+        chronicleProgress: sanitizeNumberRecord(parsed.chronicleProgress, { allowedKeys: SAVE_CHRONICLE_IDS, min: 0, max: MAX_CHRONICLE_PROGRESS, integer: true }),
+        chronicleChoices: sanitizeChoiceRecord(parsed.chronicleChoices, isChronicleChoiceId),
         patrolVictories: uniqueKnown(parsed.patrolVictories, (id) => WORLD_SAVE_METADATA.patrolIds.has(id), WORLD_SAVE_METADATA.patrolIds.size),
         wins: sanitizeNumberRecord(parsed.wins, { min: 0, max: SAVE_VALUE_LIMITS.counter, integer: true }),
         regionWins: {
@@ -1643,6 +1691,7 @@ import {
         forgeLevel: boundedInteger(parsed.forgeLevel, base.forgeLevel, { min: 0, max: SAVE_VALUE_LIMITS.stat }),
         trainingLevel: boundedInteger(parsed.trainingLevel, base.trainingLevel, { min: 0, max: SAVE_VALUE_LIMITS.stat }),
         arenaWins: boundedInteger(parsed.arenaWins, base.arenaWins, { min: 0, max: SAVE_VALUE_LIMITS.stat }),
+        arenaEliteRewardClaimed: strictBoolean(parsed.arenaEliteRewardClaimed, base.arenaEliteRewardClaimed),
         journalSeen: uniqueKnown(parsed.journalSeen, (id) => safeIdentifier(id), SAVE_VALUE_LIMITS.recordEntries),
         finalBossDefeated: strictBoolean(parsed.finalBossDefeated, base.finalBossDefeated),
         newCycleBonus,
@@ -1675,6 +1724,18 @@ import {
         if (merged.flags[`shard_${regionId}`]) merged.flags[`guardian_${regionId}_defeated`] = true;
       }
       if (!merged.partner.evolutions.includes(merged.partner.formId)) merged.partner.evolutions.unshift(merged.partner.formId);
+      for (const chronicleId of CHRONICLE_IDS) {
+        const chronicle = REGIONAL_CHRONICLES[chronicleId];
+        if (Number(merged.chronicleProgress[chronicleId] || 0) >= 1 && !getChronicleSourceChoice(chronicle, merged)) {
+          delete merged.chronicleProgress[chronicleId];
+          delete merged.chronicleChoices[chronicleId];
+          continue;
+        }
+        const completed = merged.chronicleProgress[chronicleId] === MAX_CHRONICLE_PROGRESS;
+        const validChoice = isChronicleChoiceId(chronicleId, merged.chronicleChoices[chronicleId]);
+        if (completed && !validChoice) merged.chronicleProgress[chronicleId] = MAX_CHRONICLE_PROGRESS - 1;
+        if (!completed || !validChoice) delete merged.chronicleChoices[chronicleId];
+      }
 
       const rawContract = parsed.contract;
       const currentDay = formatTime(merged.timeMinutes).day;
@@ -2129,6 +2190,19 @@ import {
             if (this.state.flags[event.onceFlag]) continue;
             list.push({ type: 'world-event', id: event.id, x: event.trigger.x, y: event.trigger.y, range: event.trigger.radius, label: `Examiner · ${event.title}`, data: event });
           }
+          for (const chronicle of Object.values(REGIONAL_CHRONICLES)) {
+            const chronicleNode = getChronicleNode(chronicle, this.state);
+            if (!chronicleNode || chronicleNode.sectorId !== map.id) continue;
+            list.push({
+              type: 'chronicle-node',
+              id: chronicleNode.id,
+              x: chronicleNode.x,
+              y: chronicleNode.y,
+              range: chronicleNode.radius,
+              label: `Chronique · ${chronicleNode.label}`,
+              data: { chronicleId: chronicle.id, nodeId: chronicleNode.id },
+            });
+          }
           if (map.sanctuary) {
             const visit = Number(this.state.sectorVisits[map.id] || 0);
             const used = Number(this.state.sanctuaryVisits[map.sanctuary.id] || 0) === visit;
@@ -2220,6 +2294,8 @@ import {
         this.activateShortcut(entity);
       } else if (entity.type === 'world-event') {
         this.openWorldEvent(entity.data);
+      } else if (entity.type === 'chronicle-node') {
+        this.resolveChronicleNode(entity.data.chronicleId, entity.data.nodeId);
       } else if (entity.type === 'sanctuary') {
         this.useSanctuary(entity.data);
       } else if (entity.type === 'guardian') {
@@ -2287,6 +2363,108 @@ import {
       };
     }
 
+    getChronicle(id) {
+      return REGIONAL_CHRONICLES[id] || null;
+    }
+
+    getTrackedChronicle() {
+      if (!this.state) return null;
+      const active = Object.values(REGIONAL_CHRONICLES)
+        .map((chronicle) => ({ chronicle, status: getChronicleStatus(chronicle, this.state) }))
+        .filter(({ status }) => status && (status.status === 'active' || status.status === 'ready'));
+      if (!active.length) return null;
+      const local = active.find(({ chronicle, status }) => {
+        if (status.status === 'ready') return this.state.map === 'city';
+        return getChronicleNode(chronicle, this.state)?.sectorId === this.state.map;
+      });
+      const currentRegion = MAPS[this.state.map]?.region;
+      const regional = currentRegion
+        ? active.find(({ chronicle, status }) => status.status === 'active' && chronicle.region === currentRegion)
+        : null;
+      return local || regional || active[0];
+    }
+
+    beginChronicle(id) {
+      const chronicle = this.getChronicle(id);
+      const status = chronicle && getChronicleStatus(chronicle, this.state);
+      if (!chronicle || status?.status !== 'available' || this.state.map !== 'city' || this.serviceType !== chronicle.service) return false;
+      this.state.chronicleProgress[id] = 1;
+      this.advanceTime(15);
+      this.updateHud();
+      this.saveGame(false);
+      this.closeOverlays();
+      this.audio.play('recruit');
+      this.showDialogue(chronicle.giverName, getChronicleIntro(chronicle, this.state));
+      return true;
+    }
+
+    resolveChronicleNode(id, nodeId) {
+      const chronicle = this.getChronicle(id);
+      const currentNode = chronicle && getChronicleNode(chronicle, this.state);
+      if (!chronicle || !currentNode || currentNode.id !== nodeId || currentNode.sectorId !== this.state.map) return false;
+      const progress = Number(this.state.chronicleProgress[id] || 0);
+      this.state.chronicleProgress[id] = Math.min(MAX_CHRONICLE_PROGRESS - 1, progress + 1);
+      this.advanceTime(25);
+      this.audio.play('discovery');
+      this.flash = .45;
+      this.spawnParticles(currentNode.x, currentNode.y, MAPS[this.state.map]?.accent || '#8de7ff', 24, 90);
+      this.updateHud();
+      // La trace est acquise avant le récit : fermer l'onglet ne peut pas la dupliquer.
+      this.saveGame(false);
+      const nextObjective = getChronicleObjective(chronicle, this.state);
+      this.showDialogue(currentNode.label, [...currentNode.lines, `Prochaine étape : ${nextObjective}.`]);
+      return true;
+    }
+
+    formatChronicleReward(reward = {}) {
+      const parts = [];
+      if (reward.credits) parts.push(`${reward.credits} crédits`);
+      for (const [itemId, amount] of Object.entries(reward.inventory || {})) parts.push(`${amount} × ${ITEMS[itemId]?.name || itemId}`);
+      for (const [key, label] of [['bond', 'lien'], ['discipline', 'discipline'], ['morale', 'moral']]) {
+        if (reward[key]) parts.push(`${reward[key] > 0 ? '+' : ''}${reward[key]} ${label}`);
+      }
+      if (reward.fatigue) parts.push(`${reward.fatigue} fatigue`);
+      return parts.join(' · ');
+    }
+
+    completeChronicle(id, choiceId) {
+      const chronicle = this.getChronicle(id);
+      const status = chronicle && getChronicleStatus(chronicle, this.state);
+      const choice = chronicle?.choices.find((entry) => entry.id === choiceId);
+      if (!chronicle || !choice || status?.status !== 'ready' || this.state.map !== 'city' || this.serviceType !== chronicle.service) return false;
+      const reward = choice.reward || {};
+      this.state.chronicleProgress[id] = MAX_CHRONICLE_PROGRESS;
+      this.state.chronicleChoices[id] = choice.id;
+      this.state.credits = clamp(Number(this.state.credits || 0) + Number(reward.credits || 0), 0, SAVE_VALUE_LIMITS.counter);
+      for (const [itemId, amount] of Object.entries(reward.inventory || {})) {
+        if (!SAVE_ITEM_IDS.has(itemId)) continue;
+        this.state.inventory[itemId] = clamp(Number(this.state.inventory[itemId] || 0) + Number(amount || 0), 0, SAVE_VALUE_LIMITS.counter);
+      }
+      for (const stat of ['bond', 'discipline', 'morale', 'fatigue']) {
+        if (!Number.isFinite(reward[stat])) continue;
+        this.state.partner[stat] = clamp(Number(this.state.partner[stat] || 0) + reward[stat], 0, 100);
+      }
+      this.advanceTime(45);
+      this.audio.play('victory');
+      this.updateHud();
+      this.saveGame(false);
+      this.closeOverlays();
+      this.showDialogue(chronicle.giverName, [...choice.lines, `Chronique achevée : ${choice.outcome}`]);
+      return true;
+    }
+
+    reviewChronicle(id) {
+      const chronicle = this.getChronicle(id);
+      const status = chronicle && getChronicleStatus(chronicle, this.state);
+      if (!chronicle || !status || this.state.map !== 'city' || this.serviceType !== chronicle.service) return false;
+      const lines = status.status === 'complete'
+        ? [status.conclusion.outcome, ...status.conclusion.lines]
+        : [`Prochaine étape : ${getChronicleObjective(chronicle, this.state)}.`];
+      this.closeOverlays();
+      this.showDialogue(chronicle.giverName, lines);
+      return true;
+    }
+
     getTransitionStatus(transition, regionId) {
       const requiredWins = Number(transition?.requiresRegionalWins || 0);
       const currentWins = this.getRegionPatrolWinCount(regionId);
@@ -2307,12 +2485,21 @@ import {
     }
 
     getTrackedTransitionId(regionId, sectorId) {
+      const trackedChronicle = this.getTrackedChronicle();
+      const chronicleNode = trackedChronicle?.status?.status === 'active'
+        ? getChronicleNode(trackedChronicle.chronicle, this.state)
+        : null;
       const trackedId = this.state?.flags?.trackedResident;
       const resident = trackedId ? RESIDENTS[trackedId] : null;
-      if (!resident || this.state.recruited.includes(trackedId) || resident.region !== regionId || resident.map === sectorId) return null;
+      const targetSectorId = chronicleNode?.sectorId && trackedChronicle.chronicle.region === regionId
+        ? chronicleNode.sectorId
+        : resident && !this.state.recruited.includes(trackedId) && resident.region === regionId
+          ? resident.map
+          : null;
+      if (!targetSectorId || targetSectorId === sectorId) return null;
       const layout = WORLD_LAYOUTS[regionId];
       const currentIndex = layout?.mainPath.indexOf(sectorId) ?? -1;
-      const targetIndex = layout?.mainPath.indexOf(resident.map) ?? -1;
+      const targetIndex = layout?.mainPath.indexOf(targetSectorId) ?? -1;
       if (currentIndex < 0 || targetIndex < 0) return null;
       const nextSectorId = layout.mainPath[currentIndex + Math.sign(targetIndex - currentIndex)];
       return getSectorTransitions(regionId, sectorId, this.state)
@@ -2357,9 +2544,12 @@ import {
       this.checkAchievements();
       this.updateHud();
       this.saveGame(false);
+      const chronicle = Object.values(REGIONAL_CHRONICLES).find(({ sourceEventId }) => sourceEventId === event.id);
       this.showDialogue('MÉMOIRE DE L’EXPÉDITION', [
         `Décision inscrite : ${choice.label}.`,
-        'Le territoire a changé subtilement autour de votre lien. Certaines conséquences accompagneront le prochain cycle.',
+        chronicle
+          ? `${chronicle.giverName} pourra interpréter cette mémoire à Nox Arca et ouvrir une chronique de retour à travers toute la région.`
+          : 'Le territoire a changé subtilement autour de votre lien. Certaines conséquences accompagneront le prochain cycle.',
       ]);
     }
 
@@ -2879,7 +3069,8 @@ import {
 
     getObjective() {
       if (!this.state) return '';
-      if (this.state.finalBossDefeated) return 'Explorer librement Nox Arca restaurée';
+      const trackedChronicle = this.getTrackedChronicle();
+      if (trackedChronicle) return `Chronique : ${getChronicleObjective(trackedChronicle.chronicle, this.state)}`;
       const trackedId = this.state.flags.trackedResident;
       if (trackedId && RESIDENTS[trackedId] && !this.state.recruited.includes(trackedId)) {
         const resident = RESIDENTS[trackedId];
@@ -2887,6 +3078,7 @@ import {
         if (this.state.map === resident.map) return `Piste : ${resident.name} se trouve dans ce secteur`;
         return `Piste : ${resident.name} · ${targetSector?.regionName || resident.region} · ${targetSector?.name || resident.hint}`;
       }
+      if (this.state.finalBossDefeated) return 'Explorer librement Nox Arca restaurée';
       const score = this.getCityScore();
       if (!this.state.recruited.includes('brakk')) return 'Trouver et vaincre Brakk-9 dans les Friches';
       const currentRegion = this.getCurrentRegionId();
@@ -3033,6 +3225,7 @@ import {
           <p>Chaque région se traverse en cinq secteurs. Les lieux se révèlent à votre passage ; les victoires distinctes ouvrent les sceaux. Un raccourci ouvert reste disponible pour le retour.</p>
           ${mapInfo.filter((map) => map.id !== 'void' && map.unlocked).map((map) => this.renderExpeditionAtlas(map.id, currentRegion === map.id)).join('')}
         </section>
+        ${this.renderChronicleJournal()}
         ${cycle.cycleCount ? `<article class="data-card" style="margin-bottom:12px"><h3>CYCLE ${cycle.cycleCount} · ${cycle.lawName}</h3><p>Opposition +${cycle.enemyLevelBonus} niveaux au maximum · récompenses et pression plafonnées. Anomalies : ${anomalyNames.length ? anomalyNames.join(' · ') : 'aucune'}.</p></article>` : ''}
         <article class="data-card" style="margin-bottom:12px">
           <h3>CONTRAT DU CŒUR · JOUR ${contract.day}</h3>
@@ -3051,6 +3244,38 @@ import {
           ${LORE.map((entry, index) => `<article class="data-card"><h3>${this.getShardCount() > index || index === 0 ? entry.title : 'ARCHIVE CORROMPUE'}</h3><p>${this.getShardCount() > index || index === 0 ? entry.text : 'Réunir davantage d’Éclats mnésiques pour restaurer ce fragment.'}</p></article>`).join('')}
         </div>
       `;
+    }
+
+    renderChronicleJournal() {
+      const completed = CHRONICLE_IDS.filter((id) => getChronicleStatus(REGIONAL_CHRONICLES[id], this.state)?.status === 'complete').length;
+      const statusLabels = {
+        undiscovered: 'MÉMOIRE À DÉCOUVRIR',
+        'giver-missing': 'HABITANT ABSENT',
+        available: 'À CONFIER EN CITÉ',
+        active: 'EXPÉDITION ACTIVE',
+        ready: 'RETOUR EN CITÉ',
+        complete: 'ACHEVÉE',
+      };
+      const cards = Object.values(REGIONAL_CHRONICLES).map((chronicle) => {
+        const status = getChronicleStatus(chronicle, this.state);
+        const traceCount = status.status === 'complete' || status.status === 'ready'
+          ? chronicle.nodes.length
+          : Math.max(0, status.progress - 1);
+        const detail = status.status === 'complete'
+          ? status.conclusion.outcome
+          : getChronicleObjective(chronicle, this.state);
+        return `<article class="data-card chronicle-card ${status.status === 'complete' ? 'chronicle-complete' : ''}">
+          <h3>${escapeHtml(chronicle.title)}</h3>
+          <p>${escapeHtml(chronicle.regionName)} · ${traceCount}/${chronicle.nodes.length} traces · ${escapeHtml(chronicle.giverName)}</p>
+          <p><strong>${escapeHtml(detail)}</strong></p>
+          <span class="badge ${status.status === 'complete' ? 'ok' : status.status === 'undiscovered' ? 'locked' : ''}">${statusLabels[status.status]}</span>
+        </article>`;
+      }).join('');
+      return `<section class="expedition-journal chronicle-journal" aria-label="Chroniques régionales">
+        <h3>CHRONIQUES DE RETOUR · ${completed}/${CHRONICLE_IDS.length}</h3>
+        <p>Les décisions trouvées au cœur des régions peuvent devenir des récits durables. Confiez-les à leur habitant, repartez écouter deux traces éloignées, puis revenez choisir ce que Nox Arca en conservera.</p>
+        <div class="menu-grid">${cards}</div>
+      </section>`;
     }
 
     renderExpeditionAtlas(regionId, current) {
@@ -3263,6 +3488,32 @@ import {
       return `<button class="service-action" data-service-action="${escapeHtml(action)}" ${disabled ? 'disabled' : ''}><strong>${escapeHtml(title)}</strong><small>${escapeHtml(description)}</small>${cost ? `<em>${escapeHtml(cost)}</em>` : ''}</button>`;
     }
 
+    renderChronicleService(chronicle) {
+      const status = getChronicleStatus(chronicle, this.state);
+      if (!status) return '';
+      let html = '<div class="service-divider" aria-hidden="true"></div>';
+      if (status.status === 'undiscovered') {
+        return html + this.serviceButton('noop', 'Chronique régionale inconnue', `Une décision prise dans ${chronicle.regionName} pourrait réveiller ce récit.`, 'MÉMOIRE INTROUVABLE', true);
+      }
+      if (status.status === 'giver-missing') {
+        return html + this.serviceButton('noop', chronicle.title, `Retrouvez ${chronicle.giverName} avant de confier cette mémoire.`, 'HABITANT ABSENT', true);
+      }
+      if (status.status === 'available') {
+        return html + this.serviceButton(`chronicle:start:${chronicle.id}`, chronicle.title, `Interpréter ${chronicle.sourceEventTitle}, puis repartir chercher deux traces aux extrémités de ${chronicle.regionName}.`, 'COMMENCER LA CHRONIQUE');
+      }
+      if (status.status === 'active') {
+        return html + this.serviceButton(`chronicle:review:${chronicle.id}`, chronicle.title, getChronicleObjective(chronicle, this.state), `${Math.max(0, status.progress - 1)}/${chronicle.nodes.length} TRACES`);
+      }
+      if (status.status === 'ready') {
+        html += this.serviceButton('noop', `${chronicle.title} · conclusion`, 'Les deux traces sont réunies. Ce choix est permanent et restera visible dans la cité.', 'CHOISIR UN HÉRITAGE', true);
+        for (const choice of chronicle.choices) {
+          html += this.serviceButton(`chronicle:complete:${chronicle.id}:${choice.id}`, choice.label, choice.outcome, this.formatChronicleReward(choice.reward).toUpperCase());
+        }
+        return html;
+      }
+      return html + this.serviceButton(`chronicle:review:${chronicle.id}`, `${chronicle.title} · achevée`, status.conclusion.outcome, 'RELIRE LE RÉCIT');
+    }
+
     renderService() {
       const p = this.state.partner;
       const type = this.serviceType;
@@ -3318,7 +3569,8 @@ import {
       } else if (type === 'arena') {
         const level = Math.max(3, Math.min(12, p.level + this.state.arenaWins));
         html += this.serviceButton('arena-challenge', `Défi d’arène ${this.state.arenaWins + 1}`, `Affronte un adversaire de niveau ${level}. Aucune perte de crédits en cas de défaite.`, `${40 + level * 8} CRÉDITS DE RÉCOMPENSE`);
-        html += this.serviceButton('arena-elite', 'Épreuve du Champion', 'Combat difficile contre une créature blindée. Récompense : Graine de Cœur.', 'NIVEAU 8 CONSEILLÉ', p.level < 6);
+        const championReward = this.state.arenaEliteRewardClaimed ? 'Graine déjà obtenue ce cycle ; XP et crédits restent disponibles.' : 'Première victoire du cycle : une Graine de Cœur.';
+        html += this.serviceButton('arena-elite', 'Épreuve du Champion', `Combat difficile contre une créature blindée. ${championReward}`, this.state.arenaEliteRewardClaimed ? 'REVANCHE DU CHAMPION' : 'GRAINE DU CHAMPION', p.level < 6);
       } else if (type === 'training') {
         const cost = 28 + this.state.trainingLevel * 4;
         const disabled = p.fatigue >= 88 || this.state.credits < cost;
@@ -3356,6 +3608,8 @@ import {
         html += this.serviceButton('security-drill', 'Simulation d’invasion', 'Combat d’élite contre une sentinelle. Récompense élevée, aucune perte de crédits.', 'ENTRAÎNEMENT');
         html += this.serviceButton('travel:void', 'Ouvrir la Porte du Néant', 'Accès direct au territoire de l’Architecte Pâle.', this.canEnterVoid() ? 'DISPONIBLE' : '100 CITÉ + 4 ÉCLATS', !this.canEnterVoid());
       }
+      const chronicle = getChronicleByService(type);
+      if (chronicle) html += this.renderChronicleService(chronicle);
       html += '</div>';
       DOM.serviceContent.innerHTML = html;
     }
@@ -3367,6 +3621,13 @@ import {
       this.audio.play('ui');
       const p = this.state.partner;
       if (action === 'noop') return;
+      if (action.startsWith('chronicle:')) {
+        const [, operation, chronicleId, choiceId] = action.split(':');
+        if (operation === 'start') this.beginChronicle(chronicleId);
+        else if (operation === 'complete') this.completeChronicle(chronicleId, choiceId);
+        else if (operation === 'review') this.reviewChronicle(chronicleId);
+        return;
+      }
       if (action === 'save') {
         this.saveGame();
       } else if (action === 'sleep') {
@@ -3426,7 +3687,7 @@ import {
         enemy.arena = true; enemy.credits = 40 + level * 8; this.closeOverlays(); this.startBattle(enemy); return;
       } else if (action === 'arena-elite') {
         const enemy = this.makeEnemy({ id: 'arena_elite', name: 'COLOSSE CHITINEUX', style: 'titan', color: '#ffcf6e', level: Math.max(8, p.level + 1) }, { boss: true });
-        enemy.arena = true; enemy.eliteReward = true; this.closeOverlays(); this.startBattle(enemy); return;
+        enemy.arena = true; enemy.eliteReward = !this.state.arenaEliteRewardClaimed; this.closeOverlays(); this.startBattle(enemy); return;
       } else if (action.startsWith('train:')) {
         const stat = action.split(':')[1];
         const cost = 28 + this.state.trainingLevel * 4;
@@ -3961,7 +4222,10 @@ import {
         const amount = Math.max(1, Math.round(baseAmount * getCycleScaling(this.state).materialMultiplier));
         this.state.inventory[enemy.loot] = (this.state.inventory[enemy.loot] || 0) + amount;
       }
-      if (enemy.eliteReward) this.state.inventory.coreSeed += 1;
+      if (enemy.eliteReward && !this.state.arenaEliteRewardClaimed) {
+        this.state.inventory.coreSeed += 1;
+        this.state.arenaEliteRewardClaimed = true;
+      }
       if (enemy.arena) this.state.arenaWins += 1;
       this.updateDailyContract(enemy);
       const progress = this.gainXp(enemy.xp);
@@ -4198,6 +4462,10 @@ import {
           for (const event of map.events || []) {
             if (!this.state.flags[event.onceFlag]) this.drawWorldEvent(event.trigger.x, event.trigger.y, map.accent);
           }
+          for (const chronicle of Object.values(REGIONAL_CHRONICLES)) {
+            const chronicleNode = getChronicleNode(chronicle, this.state);
+            if (chronicleNode?.sectorId === map.id) this.drawChronicleNode(chronicleNode, map.accent);
+          }
           if (map.sanctuary) this.drawSanctuary(map.sanctuary, map.accent);
           if (map.guardian && !this.state.flags[map.guardian.defeatFlag]) {
             drawables.push({
@@ -4249,10 +4517,41 @@ import {
       if (map.region) this.renderSectorProgress(map);
     }
 
+    getBackgroundGradient(key) {
+      if (!this.visualGradientCache) this.visualGradientCache = new Map();
+      const cached = this.visualGradientCache.get(key);
+      if (cached) return cached;
+
+      let gradient;
+      if (key === 'city') {
+        gradient = ctx.createRadialGradient(480, 275, 40, 480, 275, 570);
+        gradient.addColorStop(0, '#17243a'); gradient.addColorStop(.45, '#0c1222'); gradient.addColorStop(1, '#03050c');
+      } else if (key === 'wastes') {
+        gradient = ctx.createLinearGradient(0, 70, 0, H);
+        gradient.addColorStop(0, '#241622'); gradient.addColorStop(.45, '#3b211d'); gradient.addColorStop(1, '#0b0b11');
+      } else if (key === 'hive') {
+        gradient = ctx.createRadialGradient(480, 250, 30, 480, 260, 570);
+        gradient.addColorStop(0, '#24412d'); gradient.addColorStop(.45, '#13251e'); gradient.addColorStop(1, '#050b0a');
+      } else if (key === 'fog') {
+        gradient = ctx.createLinearGradient(0, 70, 0, H);
+        gradient.addColorStop(0, '#242938'); gradient.addColorStop(.55, '#11151f'); gradient.addColorStop(1, '#05070b');
+      } else if (key === 'fog-band') {
+        gradient = ctx.createLinearGradient(0, 0, W, 0);
+        gradient.addColorStop(0, 'rgba(210,220,240,0)'); gradient.addColorStop(.5, 'rgba(210,220,240,.035)'); gradient.addColorStop(1, 'rgba(210,220,240,0)');
+      } else if (key === 'foundry') {
+        gradient = ctx.createLinearGradient(0, 70, 0, H);
+        gradient.addColorStop(0, '#282217'); gradient.addColorStop(.42, '#171411'); gradient.addColorStop(1, '#070708');
+      } else {
+        gradient = ctx.createRadialGradient(480, 240, 20, 480, 260, 620);
+        gradient.addColorStop(0, '#271b49'); gradient.addColorStop(.43, '#0f0d24'); gradient.addColorStop(1, '#020309');
+      }
+      this.visualGradientCache.set(key, gradient);
+      return gradient;
+    }
+
     renderMapBackground(map) {
       if (map.theme === 'city') {
-        const g = ctx.createRadialGradient(480, 275, 40, 480, 275, 570);
-        g.addColorStop(0, '#17243a'); g.addColorStop(.45, '#0c1222'); g.addColorStop(1, '#03050c');
+        const g = this.getBackgroundGradient('city');
         ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
         ctx.strokeStyle = 'rgba(141,231,255,.055)'; ctx.lineWidth = 1;
         for (let x = 0; x <= W; x += 48) { ctx.beginPath(); ctx.moveTo(x, 70); ctx.lineTo(x, H); ctx.stroke(); }
@@ -4265,8 +4564,7 @@ import {
           ctx.beginPath(); ctx.arc(480 + Math.cos(angle) * radius, 275 + Math.sin(angle) * radius * .62, 2 + (i % 3), 0, TAU); ctx.fill();
         }
       } else if (map.theme === 'wastes') {
-        const g = ctx.createLinearGradient(0, 70, 0, H);
-        g.addColorStop(0, '#241622'); g.addColorStop(.45, '#3b211d'); g.addColorStop(1, '#0b0b11');
+        const g = this.getBackgroundGradient('wastes');
         ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
         ctx.fillStyle = 'rgba(255,145,92,.08)';
         for (let i = 0; i < 22; i += 1) {
@@ -4276,8 +4574,7 @@ import {
         ctx.strokeStyle = 'rgba(255,180,130,.12)';
         for (let i = 0; i < 9; i += 1) { const x = i * 120 - 40; ctx.beginPath(); ctx.moveTo(x, 80); ctx.lineTo(x + 80, H); ctx.stroke(); }
       } else if (map.theme === 'hive') {
-        const g = ctx.createRadialGradient(480, 250, 30, 480, 260, 570);
-        g.addColorStop(0, '#24412d'); g.addColorStop(.45, '#13251e'); g.addColorStop(1, '#050b0a');
+        const g = this.getBackgroundGradient('hive');
         ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
         ctx.strokeStyle = 'rgba(188,255,141,.09)';
         for (let y = 95; y < H; y += 56) {
@@ -4290,20 +4587,17 @@ import {
         ctx.fillStyle = 'rgba(149,255,111,.045)';
         for (let i = 0; i < 18; i += 1) { const x = seededNoise(i + 44) * W; const y = 90 + seededNoise(i + 67) * 430; ctx.beginPath(); ctx.arc(x, y, 14 + seededNoise(i + 90) * 30, 0, TAU); ctx.fill(); }
       } else if (map.theme === 'fog') {
-        const g = ctx.createLinearGradient(0, 70, 0, H);
-        g.addColorStop(0, '#242938'); g.addColorStop(.55, '#11151f'); g.addColorStop(1, '#05070b');
+        const g = this.getBackgroundGradient('fog');
         ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
         ctx.strokeStyle = 'rgba(216,226,255,.08)';
         for (let x = 55; x < W; x += 105) { ctx.beginPath(); ctx.moveTo(x, 75); ctx.lineTo(x, H); ctx.stroke(); ctx.beginPath(); ctx.arc(x, 128, 26, 0, TAU); ctx.stroke(); }
+        const fog = this.getBackgroundGradient('fog-band');
         for (let i = 0; i < 15; i += 1) {
           const y = 110 + i * 28 + Math.sin(this.elapsed * .17 + i) * 12;
-          const fog = ctx.createLinearGradient(0, y, W, y + 25);
-          fog.addColorStop(0, 'rgba(210,220,240,0)'); fog.addColorStop(.5, 'rgba(210,220,240,.035)'); fog.addColorStop(1, 'rgba(210,220,240,0)');
           ctx.fillStyle = fog; ctx.fillRect(0, y, W, 35);
         }
       } else if (map.theme === 'foundry') {
-        const g = ctx.createLinearGradient(0, 70, 0, H);
-        g.addColorStop(0, '#282217'); g.addColorStop(.42, '#171411'); g.addColorStop(1, '#070708');
+        const g = this.getBackgroundGradient('foundry');
         ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
         ctx.strokeStyle = 'rgba(255,211,107,.08)';
         for (let x = 0; x < W; x += 64) { ctx.strokeRect(x, 75, 48, H - 75); }
@@ -4312,20 +4606,143 @@ import {
         for (let i = 0; i < 5; i += 1) { const y = 145 + i * 82; ctx.beginPath(); ctx.moveTo(0, y); ctx.bezierCurveTo(220, y - 26, 680, y + 35, W, y - 10); ctx.stroke(); }
         ctx.shadowBlur = 0;
       } else {
-        const g = ctx.createRadialGradient(480, 240, 20, 480, 260, 620);
-        g.addColorStop(0, '#271b49'); g.addColorStop(.43, '#0f0d24'); g.addColorStop(1, '#020309');
+        const g = this.getBackgroundGradient('void');
         ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
         ctx.strokeStyle = 'rgba(179,148,255,.12)';
         for (let r = 80; r < 500; r += 52) { ctx.beginPath(); ctx.ellipse(480, 250, r * 1.28, r * .42, this.elapsed * .015, 0, TAU); ctx.stroke(); }
         for (const particle of this.worldParticles) { ctx.fillStyle = `rgba(210,195,255,${.08 + particle.z * .16})`; ctx.fillRect(particle.x, particle.y, particle.z * 2, particle.z * 2); }
       }
+      this.drawSectorIdentity(map);
+    }
+
+    drawSectorIdentity(map) {
+      const visual = getSectorVisualSignature(map.id, map.theme);
+      const count = 4 + Math.round(visual.detail * 4);
+      const phase = (visual.seed % 997) / 997 * TAU;
+      const motif = visual.motif;
+      ctx.save();
+      ctx.strokeStyle = visual.accent;
+      ctx.fillStyle = visual.accent;
+      ctx.globalAlpha = visual.alpha;
+      ctx.lineWidth = 1;
+
+      if (motif === 'echo-grid' || motif === 'watch-grid') {
+        const cellWidth = motif === 'watch-grid' ? 118 : 92;
+        for (let index = 0; index < count; index += 1) {
+          const x = 35 + ((visual.seed >>> (index % 20)) + index * 137) % 820;
+          const y = 95 + index * (380 / Math.max(1, count - 1));
+          ctx.strokeRect(x, y, cellWidth, 24 + (index % 3) * 8);
+          ctx.beginPath(); ctx.moveTo(x + cellWidth / 2, y); ctx.lineTo(x + cellWidth / 2, y + 24 + (index % 3) * 8); ctx.stroke();
+        }
+      } else if (motif === 'signal-nodes' || motif === 'portal-scars' || motif === 'silent-rays') {
+        const cx = motif === 'portal-scars' ? 480 : 480 + Math.cos(phase) * 90;
+        const cy = motif === 'silent-rays' ? 245 : 285;
+        for (let index = 0; index < count; index += 1) {
+          const angle = phase + visual.angle + index * TAU / count;
+          const inner = motif === 'portal-scars' ? 45 : 78;
+          const outer = motif === 'silent-rays' ? 520 : 360;
+          ctx.beginPath();
+          ctx.moveTo(cx + Math.cos(angle) * inner, cy + Math.sin(angle) * inner * .45);
+          ctx.lineTo(cx + Math.cos(angle) * outer, cy + Math.sin(angle) * outer * .45);
+          ctx.stroke();
+          if (motif === 'signal-nodes') {
+            ctx.beginPath(); ctx.arc(cx + Math.cos(angle) * 220, cy + Math.sin(angle) * 99, 3, 0, TAU); ctx.fill();
+          }
+        }
+      } else if (motif === 'civic-orbits' || motif === 'dust-rings' || motif === 'distant-rings' || motif === 'void-orbits' || motif === 'broken-halo') {
+        if (motif === 'broken-halo') ctx.setLineDash([12, 18]);
+        const cx = 480 + Math.cos(phase) * (motif === 'dust-rings' ? 130 : 55);
+        const cy = 280 + Math.sin(phase) * 32;
+        for (let index = 0; index < count; index += 1) {
+          const radius = 68 + index * 54;
+          ctx.beginPath(); ctx.ellipse(cx, cy, radius * 1.5, radius * .42, visual.angle, 0, TAU); ctx.stroke();
+        }
+        ctx.setLineDash([]);
+      } else if (motif === 'wind-strata' || motif === 'soft-strata' || motif === 'furnace-flow') {
+        for (let index = 0; index < count; index += 1) {
+          const y = 105 + index * (405 / Math.max(1, count - 1));
+          const bend = 24 + Math.sin(phase + index * 1.3) * (motif === 'furnace-flow' ? 38 : 20);
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.bezierCurveTo(260, y - bend, 675, y + bend, W, y - bend * .3);
+          ctx.stroke();
+        }
+      } else if (motif === 'living-cells' || motif === 'spore-bloom') {
+        for (let index = 0; index < count; index += 1) {
+          const x = 90 + ((visual.seed >>> (index % 24)) + index * 151) % 780;
+          const y = 110 + ((visual.seed >>> ((index + 9) % 24)) + index * 83) % 350;
+          const radius = 16 + visual.detail * 13 + (index % 3) * 5;
+          ctx.beginPath();
+          if (motif === 'living-cells') ctx.ellipse(x, y, radius * 1.4, radius, phase + index, 0, TAU);
+          else ctx.arc(x, y, radius, 0, TAU);
+          ctx.stroke();
+          if (motif === 'spore-bloom') {
+            ctx.beginPath(); ctx.arc(x + radius * .7, y - radius * .45, 3 + (index % 3), 0, TAU); ctx.fill();
+          }
+        }
+      } else if (motif === 'vein-canopy') {
+        for (let index = 0; index < count; index += 1) {
+          const x = (index + .5) * (W / count);
+          const sway = Math.sin(phase + index * 1.7) * 46;
+          ctx.beginPath();
+          ctx.moveTo(x, H);
+          ctx.bezierCurveTo(x - sway, 430, x + sway, 255, x + sway * .25, 78);
+          ctx.stroke();
+          ctx.beginPath(); ctx.ellipse(x + sway * .45, 255, 11 + visual.detail * 8, 4, phase + index, 0, TAU); ctx.stroke();
+        }
+      } else if (motif === 'procession-veil') {
+        ctx.setLineDash([6, 13]);
+        for (let index = 0; index < count; index += 1) {
+          const x = (index + .5) * W / count;
+          ctx.beginPath(); ctx.moveTo(x, 75); ctx.bezierCurveTo(x - 45, 210, x + 45, 380, x, H); ctx.stroke();
+        }
+        ctx.setLineDash([]);
+      } else if (motif === 'memory-arches') {
+        const cx = 480 + Math.cos(phase) * 100;
+        for (let index = 0; index < count; index += 1) {
+          const radius = 65 + index * 48;
+          ctx.beginPath(); ctx.ellipse(cx, 315, radius * 1.35, radius * .6, visual.angle, Math.PI, TAU); ctx.stroke();
+        }
+      } else if (motif === 'mirror-haze') {
+        for (let index = 0; index < count; index += 1) {
+          const x = 80 + index * (800 / Math.max(1, count - 1));
+          const y = 160 + Math.sin(phase + index) * 72;
+          ctx.save(); ctx.translate(x, y); ctx.rotate(Math.PI / 4 + visual.angle);
+          ctx.strokeRect(-18 - index, -18 - index, 36 + index * 2, 36 + index * 2);
+          ctx.restore();
+        }
+      } else if (motif === 'rail-circuit') {
+        for (let index = 0; index < count; index += 1) {
+          const y = 105 + index * (410 / Math.max(1, count - 1));
+          const offset = 24 + ((visual.seed >>> (index % 24)) & 31);
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.lineTo(190 + offset, y);
+          ctx.lineTo(235 + offset, y + Math.sin(phase + index) * 18);
+          ctx.lineTo(W, y + Math.sin(phase + index * .7) * 8);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(235 + offset, y + Math.sin(phase + index) * 18, 2.5, 0, TAU);
+          ctx.fill();
+        }
+      } else {
+        for (let index = 0; index < count; index += 1) {
+          const x = -80 + index * (W + 160) / Math.max(1, count - 1);
+          const lean = 55 + Math.sin(phase + index) * 38;
+          ctx.beginPath();
+          ctx.moveTo(x, H); ctx.lineTo(x + lean, 78);
+          ctx.lineTo(x + lean * .45 + 34, 335); ctx.closePath();
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
     }
 
     renderMapGeometry(map) {
-      for (const obstacle of map.obstacles || []) this.drawObstacle(obstacle, map.theme, map.accent);
+      for (const obstacle of map.obstacles || []) this.drawObstacle(obstacle, map.theme, map.accent, map.id);
     }
 
-    drawObstacle(rect, theme, accent) {
+    drawObstacle(rect, theme, accent, sectorId = theme) {
       ctx.save();
       if (theme === 'hive') {
         ctx.fillStyle = '#172d22'; ctx.strokeStyle = 'rgba(188,255,141,.22)';
@@ -4347,6 +4764,138 @@ import {
         ctx.beginPath(); ctx.moveTo(rect.x + 8, rect.y); ctx.lineTo(rect.x + rect.w, rect.y + 8); ctx.lineTo(rect.x + rect.w - 7, rect.y + rect.h); ctx.lineTo(rect.x, rect.y + rect.h - 7); ctx.closePath(); ctx.fill(); ctx.stroke();
         ctx.strokeStyle = hexToRgba(accent, .08); ctx.beginPath(); ctx.moveTo(rect.x + 12, rect.y + 10); ctx.lineTo(rect.x + rect.w - 18, rect.y + rect.h - 12); ctx.stroke();
       }
+      const visual = getObstacleVisual(rect.kind, sectorId);
+      const phase = (visual.seed % 997) / 997 * TAU;
+      const spacing = Math.max(12, 26 - Math.round(visual.detail * 10));
+      const motif = visual.motif;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(rect.x, rect.y, rect.w, rect.h);
+      ctx.clip();
+      ctx.strokeStyle = visual.accent;
+      ctx.fillStyle = visual.accent;
+      ctx.globalAlpha = visual.alpha;
+      ctx.lineWidth = 1;
+      if (visual.family === 'mechanical') {
+        if (/(cogs|rings)/.test(motif)) {
+          const step = Math.max(8, spacing - 4);
+          for (let radius = step; radius < Math.max(rect.w, rect.h) * .55; radius += step) {
+            ctx.beginPath();
+            ctx.ellipse(rect.x + rect.w / 2, rect.y + rect.h / 2, radius, Math.max(3, radius * .58), visual.angle, 0, TAU);
+            ctx.stroke();
+          }
+        } else if (/(belt|flow|pipe|rail)/.test(motif)) {
+          for (let y = rect.y + spacing / 2; y < rect.y + rect.h; y += spacing) {
+            ctx.beginPath(); ctx.moveTo(rect.x, y);
+            ctx.quadraticCurveTo(rect.x + rect.w / 2, y + Math.sin(phase + y) * 7, rect.x + rect.w, y);
+            ctx.stroke();
+          }
+        } else if (/(lattice|bars|caged)/.test(motif)) {
+          ctx.setLineDash([4, 4]);
+          for (let x = rect.x + spacing / 2; x < rect.x + rect.w; x += spacing) {
+            ctx.beginPath(); ctx.moveTo(x, rect.y); ctx.lineTo(x, rect.y + rect.h); ctx.stroke();
+          }
+          for (let y = rect.y + spacing / 2; y < rect.y + rect.h; y += spacing) {
+            ctx.beginPath(); ctx.moveTo(rect.x, y); ctx.lineTo(rect.x + rect.w, y); ctx.stroke();
+          }
+          ctx.setLineDash([]);
+        } else if (/(panels|cells)/.test(motif)) {
+          for (let y = rect.y + 5; y < rect.y + rect.h - 4; y += spacing) {
+            for (let x = rect.x + 5; x < rect.x + rect.w - 4; x += spacing) {
+              ctx.strokeRect(x, y, Math.min(spacing - 5, rect.x + rect.w - x - 3), Math.min(spacing - 5, rect.y + rect.h - y - 3));
+            }
+          }
+        } else {
+          for (let x = rect.x + spacing / 2; x < rect.x + rect.w; x += spacing) {
+            ctx.beginPath(); ctx.moveTo(x, rect.y + 4); ctx.lineTo(x, rect.y + rect.h - 4); ctx.stroke();
+            ctx.beginPath(); ctx.arc(x, rect.y + rect.h / 2, 2, 0, TAU); ctx.fill();
+          }
+        }
+      } else if (visual.family === 'organic') {
+        if (/(cells|lobes|clusters|rings)/.test(motif)) {
+          for (let x = rect.x + spacing / 2; x < rect.x + rect.w; x += spacing) {
+            for (let y = rect.y + spacing / 2; y < rect.y + rect.h; y += spacing) {
+              const radius = Math.max(3, spacing * (.2 + ((x + y + visual.seed) % 5) * .035));
+              ctx.beginPath(); ctx.ellipse(x, y, radius * 1.35, radius, visual.angle, 0, TAU); ctx.stroke();
+            }
+          }
+        } else if (/(veins|web|capillaries|filaments)/.test(motif)) {
+          for (let x = rect.x + spacing / 2; x < rect.x + rect.w; x += spacing) {
+            ctx.beginPath(); ctx.moveTo(x, rect.y);
+            ctx.bezierCurveTo(x - spacing, rect.y + rect.h * .35, x + spacing, rect.y + rect.h * .65, x + Math.sin(phase + x) * 5, rect.y + rect.h);
+            ctx.stroke();
+          }
+        } else {
+          for (let y = rect.y + spacing / 2; y < rect.y + rect.h; y += spacing) {
+            ctx.beginPath();
+            ctx.moveTo(rect.x, y);
+            ctx.bezierCurveTo(rect.x + rect.w * .3, y - 9, rect.x + rect.w * .7, y + 9, rect.x + rect.w, y + Math.sin(phase + y) * 4);
+            ctx.stroke();
+          }
+        }
+      } else if (visual.family === 'ritual-fog') {
+        if (motif === 'mirror-facets') {
+          for (let x = rect.x + spacing / 2; x < rect.x + rect.w; x += spacing) {
+            ctx.save(); ctx.translate(x, rect.y + rect.h / 2); ctx.rotate(Math.PI / 4 + visual.angle);
+            ctx.strokeRect(-spacing * .25, -spacing * .25, spacing * .5, spacing * .5); ctx.restore();
+          }
+        } else if (motif.includes('arches')) {
+          const radiusStep = Math.max(9, spacing - 3);
+          for (let radius = radiusStep; radius < Math.max(rect.w, rect.h); radius += radiusStep) {
+            ctx.beginPath();
+            ctx.ellipse(rect.x + rect.w / 2, rect.y + rect.h, radius, Math.max(4, radius * .55), visual.angle, Math.PI, TAU);
+            ctx.stroke();
+          }
+        } else if (/(procession|funerary|veil)/.test(motif)) {
+          ctx.setLineDash([3, 6]);
+          for (let x = rect.x + spacing / 2; x < rect.x + rect.w; x += spacing) {
+            ctx.beginPath(); ctx.moveTo(x, rect.y); ctx.lineTo(x + Math.sin(phase + x) * 6, rect.y + rect.h); ctx.stroke();
+          }
+          ctx.setLineDash([]);
+        } else if (/(glyphs|runes|sigil)/.test(motif)) {
+          for (let x = rect.x + spacing / 2; x < rect.x + rect.w; x += spacing) {
+            const y = rect.y + rect.h / 2 + Math.sin(phase + x) * Math.min(8, rect.h * .18);
+            ctx.beginPath(); ctx.moveTo(x - 5, y); ctx.lineTo(x, y - 5); ctx.lineTo(x + 5, y); ctx.lineTo(x, y + 5); ctx.closePath(); ctx.stroke();
+          }
+        } else {
+          const radiusStep = Math.max(9, spacing - 3);
+          for (let radius = radiusStep; radius < Math.max(rect.w, rect.h); radius += radiusStep) {
+            ctx.beginPath();
+            ctx.ellipse(rect.x + rect.w / 2, rect.y + rect.h / 2, radius, Math.max(4, radius * .45), visual.angle, 0, TAU);
+            ctx.stroke();
+          }
+        }
+      } else {
+        if (/(rings|cracks)/.test(motif)) {
+          const radiusStep = Math.max(9, spacing - 3);
+          for (let radius = radiusStep; radius < Math.max(rect.w, rect.h) * .65; radius += radiusStep) {
+            ctx.beginPath();
+            ctx.ellipse(rect.x + rect.w / 2, rect.y + rect.h / 2, radius, Math.max(3, radius * .32), visual.angle, 0, TAU);
+            ctx.stroke();
+          }
+        } else if (motif.includes('strata')) {
+          for (let y = rect.y + spacing / 2; y < rect.y + rect.h; y += spacing) {
+            ctx.beginPath(); ctx.moveTo(rect.x, y);
+            ctx.quadraticCurveTo(rect.x + rect.w * .45, y - 8, rect.x + rect.w, y + 4); ctx.stroke();
+          }
+        } else if (/(fragments|shards|panels)/.test(motif)) {
+          for (let offset = -rect.h; offset < rect.w; offset += spacing) {
+            ctx.beginPath();
+            ctx.moveTo(rect.x + offset, rect.y + rect.h);
+            ctx.lineTo(rect.x + offset + rect.h * .55, rect.y);
+            ctx.lineTo(rect.x + offset + rect.h * .8, rect.y + rect.h * .62);
+            ctx.closePath(); ctx.stroke();
+          }
+        } else {
+          for (let offset = -rect.h; offset < rect.w; offset += spacing) {
+            ctx.beginPath();
+            ctx.moveTo(rect.x + offset, rect.y + rect.h);
+            ctx.lineTo(rect.x + offset + rect.h * .55, rect.y);
+            ctx.stroke();
+          }
+        }
+      }
+      ctx.restore();
       ctx.restore();
     }
 
@@ -4436,6 +4985,16 @@ import {
       ctx.fillStyle = color; ctx.font = '900 22px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(building.icon, x + w / 2, y + h / 2 - 4);
       ctx.fillStyle = '#edf6ff'; ctx.font = '800 9px system-ui'; ctx.fillText(building.label, x + w / 2, y + h - 10);
       ctx.restore();
+      const chronicle = getChronicleByService(resident.service);
+      const completed = chronicle && getChronicleStatus(chronicle, this.state)?.status === 'complete';
+      if (completed) {
+        ctx.save();
+        ctx.translate(x + w - 10, y + 10);
+        ctx.fillStyle = color; ctx.strokeStyle = '#f4fbff'; ctx.lineWidth = 1.5; ctx.shadowBlur = 10; ctx.shadowColor = color;
+        ctx.beginPath(); ctx.arc(0, 0, 8 + Math.sin(this.elapsed * 2) * .7, 0, TAU); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = '#08101a'; ctx.font = '900 9px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('◇', 0, 0);
+        ctx.restore();
+      }
     }
 
     drawPortal(x, y, color, unlocked, target) {
@@ -4521,6 +5080,31 @@ import {
       ctx.fillStyle = '#f4fbff'; ctx.font = '900 17px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText('?', 0, 0);
       ctx.restore();
+    }
+
+    drawChronicleNode(nodeData, color) {
+      const pulse = 1 + Math.sin(this.elapsed * 3.1) * .07;
+      ctx.save();
+      ctx.translate(nodeData.x, nodeData.y);
+      ctx.shadowBlur = 22;
+      ctx.shadowColor = color;
+      ctx.fillStyle = hexToRgba(color, .2);
+      ctx.strokeStyle = '#f4fbff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let index = 0; index < 6; index += 1) {
+        const angle = -Math.PI / 2 + index * TAU / 6;
+        const radius = (index % 2 ? 19 : 23) * pulse;
+        const x = Math.cos(angle) * radius;
+        const y = Math.sin(angle) * radius;
+        if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = '#f4fbff'; ctx.font = '900 15px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('◇', 0, 0);
+      ctx.restore();
+      this.drawEntityLabel(nodeData.x, nodeData.y - 43, 'TRACE MNÉSIQUE', nodeData.label.toUpperCase());
     }
 
     drawSanctuary(sanctuary, color) {
@@ -4715,12 +5299,21 @@ import {
       const p = this.state.partner;
       const form = FORMS[p.formId];
       const allResidents = this.state.recruited.length === 12;
-      DOM.endingCopy.textContent = allResidents
+      const endingBase = allResidents
         ? `L’Architecte comprend enfin ce que ses calculs ignoraient : Nox Arca n’est pas une bouche, mais un foyer dont chaque habitant a choisi la porte. ${p.name}, devenu ${form.name}, pousse le Cœur à battre sans absorber les mondes qu’il relie. La cité est complète.`
         : `L’Architecte cède devant un lien qu’il ne peut réduire à un ordre. ${p.name}, sous la forme ${form.name}, rallume le Cœur. Nox Arca respire de nouveau ; les habitants encore absents pourront toujours être retrouvés après la fin.`;
+      const completedChronicles = Object.values(REGIONAL_CHRONICLES)
+        .filter((chronicle) => getChronicleStatus(chronicle, this.state)?.status === 'complete');
+      const chronicleEpilogue = completedChronicles.length === CHRONICLE_IDS.length
+        ? ' Les quatre chroniques de retour donnent à la cité plus qu’un avenir : les absents, les vivants et les protocoles libérés possèdent désormais une place choisie dans sa mémoire.'
+        : completedChronicles.length
+          ? ` ${completedChronicles.length} chronique(s) de retour témoignent déjà que reconstruire ne signifie pas effacer. Les autres mémoires pourront encore être suivies.`
+          : ' Ses territoires conservent encore des mémoires auxquelles la cité devra choisir de répondre.';
+      DOM.endingCopy.textContent = endingBase + chronicleEpilogue;
       DOM.endingStats.innerHTML = `
         <span>${this.state.recruited.length}/12 HABITANTS</span>
         <span>CITÉ ${this.getCityScore()}</span>
+        <span>${completedChronicles.length}/${CHRONICLE_IDS.length} CHRONIQUES</span>
         <span>${this.getTotalWins()} VICTOIRES</span>
         <span>${p.evolutions.length} FORMES</span>
         <span>JOUR ${formatTime(this.state.timeMinutes).day}</span>
@@ -4759,6 +5352,7 @@ import {
         return;
       }
       const previousChoices = { ...this.state.expeditionChoices };
+      const inheritedChoiceHistory = { ...this.state.cycleEchoes, ...previousChoices };
       const plan = createNextCyclePlan(this.state, lawId);
       const law = CYCLE_LAWS[lawId];
       this.state.flags.ngPlus = true;
@@ -4768,7 +5362,7 @@ import {
       this.state.cycleCount = plan.cycleCount;
       this.state.cycleModifier = plan.cycleModifier;
       this.state.cycleAnomalies = { ...plan.cycleAnomalies };
-      this.state.cycleEchoes = previousChoices;
+      this.state.cycleEchoes = inheritedChoiceHistory;
       this.state.newCycleBonus = plan.newCycleBonus;
       this.state.worldDefeated = {};
       this.state.regionWins = { wastes: 0, hive: 0, fog: 0, foundry: 0, void: 0 };
@@ -4779,6 +5373,7 @@ import {
       this.state.expeditionChoices = {};
       this.state.contract = null;
       this.state.arenaWins = 0;
+      this.state.arenaEliteRewardClaimed = false;
       for (const regionId of REGION_IDS) {
         const layout = WORLD_LAYOUTS[regionId];
         this.state.flags[`shard_${regionId}`] = false;
@@ -4807,7 +5402,7 @@ import {
       this.showDialogue('NOUVEAU CYCLE +', [
         `Cycle ${plan.cycleCount} — ${law.name}. ${law.description}`,
         `Les créatures gagnent jusqu’à ${plan.scaling.enemyLevelBonus} niveaux supplémentaires. Les sceaux 2/5, gardiens, Éclats, événements et raccourcis doivent être reconquis.`,
-        `La cité, les recrues, les projets, les objets, le bestiaire et les évolutions restent acquis. Une Graine de Cœur rejoint l’inventaire. ${inheritedSummary}`,
+        `La cité, les recrues, les projets, les chroniques, les objets, le bestiaire et les évolutions restent acquis. Une Graine de Cœur rejoint l’inventaire. ${inheritedSummary}`,
       ]);
       this.saveGame(false);
     }

@@ -82,8 +82,10 @@ export function sanitizeChoiceRecord(input, allowedChoices, maxEntries = SAVE_VA
   let count = 0;
   for (const [eventId, choiceId] of Object.entries(input)) {
     if (count >= maxEntries) break;
-    const choices = allowedChoices.get(eventId);
-    if (!choices?.has(choiceId)) continue;
+    const accepted = typeof allowedChoices === 'function'
+      ? allowedChoices(eventId, choiceId)
+      : allowedChoices?.get?.(eventId)?.has?.(choiceId);
+    if (!accepted) continue;
     output[eventId] = choiceId;
     count += 1;
   }

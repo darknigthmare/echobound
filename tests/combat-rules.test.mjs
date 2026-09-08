@@ -132,6 +132,65 @@ test('les techniques appliquent leur identité sans aléatoire', () => {
   assert.equal(oracleTarget.power, 46);
 });
 
+test('Ravage Dimensionnel convertit 8 % des dégâts réellement infligés en PV', () => {
+  const actor = makeActor();
+  const target = makeEnemy({ hp: 80, maxHp: 100 });
+  const result = resolveTechnique({
+    formId: 'riftclaw',
+    actor,
+    target,
+    battle: { sync: 0 },
+    damage: 50,
+  });
+
+  assert.equal(result.damageResult.damageApplied, 50);
+  assert.equal(result.effect.hpRestored, 4);
+  assert.equal(actor.hp, 44);
+  assert.equal(result.effect.enemyPowerReduced ?? 0, 0);
+  assert.equal(target.power, 50);
+});
+
+test('le vol de vie de Ravage Dimensionnel respecte les dégâts effectifs et les PV maximum', () => {
+  const woundedActor = { ...makeActor(), hp: 40 };
+  const overkillTarget = makeEnemy({ hp: 25, maxHp: 100 });
+  const overkill = resolveTechnique({
+    formId: 'riftclaw',
+    actor: woundedActor,
+    target: overkillTarget,
+    battle: { sync: 0 },
+    damage: 100,
+  });
+
+  assert.equal(overkill.damageResult.damageApplied, 25);
+  assert.equal(overkill.effect.hpRestored, 2);
+  assert.equal(woundedActor.hp, 42);
+
+  const cappedActor = { ...makeActor(), hp: 98 };
+  const capped = resolveTechnique({
+    formId: 'riftclaw',
+    actor: cappedActor,
+    target: makeEnemy({ hp: 80, maxHp: 100 }),
+    battle: { sync: 0 },
+    damage: 50,
+  });
+
+  assert.equal(capped.effect.hpRestored, 2);
+  assert.equal(cappedActor.hp, cappedActor.maxHp);
+
+  const untouchedActor = makeActor();
+  const zero = resolveTechnique({
+    formId: 'riftclaw',
+    actor: untouchedActor,
+    target: makeEnemy(),
+    battle: { sync: 0 },
+    damage: 0,
+  });
+
+  assert.equal(zero.damageResult.damageApplied, 0);
+  assert.equal(zero.effect.hpRestored, 0);
+  assert.equal(untouchedActor.hp, 40);
+});
+
 test('les quatre variantes Unisson produisent des résultats différents', () => {
   const forms = ['dreadmaw', 'cathedral', 'seraph', 'sovereign'];
   const results = forms.map((formId) => {

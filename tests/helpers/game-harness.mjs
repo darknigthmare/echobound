@@ -5,7 +5,7 @@ import vm from 'node:vm';
 const gameUrl = new URL('../../src/game.js', import.meta.url);
 
 /** Runs the real Game methods; only rendering, audio and the browser loop are absent. */
-export async function createGameHarness({ starter = 'feral', difficulty = 'standard', seed = 1, storageDenied = false } = {}) {
+export async function createGameHarness({ starter = 'feral', difficulty = 'standard', seed = 1, storageDenied = false, canvasContext = null } = {}) {
   const elements = new Map();
   class ElementStub {
     constructor() {
@@ -26,7 +26,7 @@ export async function createGameHarness({ starter = 'feral', difficulty = 'stand
     removeEventListener() {}
     setAttribute(key, value) { this.attributes[key] = String(value); }
     getAttribute(key) { return this.attributes[key] ?? null; }
-    getContext() { return {}; }
+    getContext() { return canvasContext || {}; }
     appendChild(child) { this.children.push(child); return child; }
     focus() { document.activeElement = this; }
     closest() { return null; }

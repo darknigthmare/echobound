@@ -159,7 +159,7 @@ test('les choix de dialogue attendent le relâchement de la touche qui les rév�
   assert.match(choices, /requestAnimationFrame\(focusFirstChoice\)/);
 });
 
-test('les choix d’expédition sont hérités avant leur remise à zéro en NG+', () => {
+test('les choix d’expédition rejoignent un historique cumulatif avant leur remise à zéro en NG+', () => {
   const echoes = between(gameSource, '    applyCycleEchoes(choices = {})', '\n    beginNewCycle(lawId = null)');
   const newCycle = between(gameSource, '    beginNewCycle(lawId = null)', '\n  }\n\n  const game = new Game()');
 
@@ -171,7 +171,8 @@ test('les choix d’expédition sont hérités avant leur remise à zéro en NG+
 
   assertOrdered(newCycle, [
     'const previousChoices = { ...this.state.expeditionChoices }',
-    'this.state.cycleEchoes = previousChoices',
+    'const inheritedChoiceHistory = { ...this.state.cycleEchoes, ...previousChoices }',
+    'this.state.cycleEchoes = inheritedChoiceHistory',
     'this.state.expeditionChoices = {}',
     'this.applyCycleEchoes(previousChoices)',
   ]);

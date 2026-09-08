@@ -63,7 +63,7 @@ export const FORM_TECHNIQUE_PROFILES = Object.freeze({
     criticalBonus: 0.1,
     syncGain: 22,
     unisonVariant: 'assault',
-    effect: { id: 'dimensional_ravage', breaksEnemyGuard: true },
+    effect: { id: 'dimensional_ravage', breaksEnemyGuard: true, lifeSteal: 0.08 },
   }),
   ironhide: freezeProfile({
     formName: 'CUIRASSE ABYSSALE',
@@ -343,7 +343,7 @@ export function resolveTechnique({ formId, actor, target, battle = null, damage 
   resolvedDamage = Math.max(0, Math.round(resolvedDamage));
 
   const damageResult = resolveFinalBossDamage(target, resolvedDamage);
-  const effect = applyTechniqueEffect(profile, actor, target, battle, resolvedDamage);
+  const effect = applyTechniqueEffect(profile, actor, target, battle, damageResult.damageApplied);
 
   return Object.freeze({ profile, damage: resolvedDamage, damageResult, effect });
 }

@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PLATFORM_VERSION = '2.0.0-pwa.4';
+  const PLATFORM_VERSION = '2.0.0-pwa.5';
   const root = document.documentElement;
   let deferredInstallPrompt = null;
   let registration = null;

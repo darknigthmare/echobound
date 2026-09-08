@@ -26,6 +26,7 @@
   const OBJECT_FIELDS = Object.freeze([
     'player', 'partner', 'inventory', 'flags', 'settings', 'regionWins', 'wins', 'worldDefeated',
     'sectorVisits', 'sanctuaryVisits', 'expeditionChoices', 'cycleAnomalies', 'cycleEchoes',
+    'chronicleProgress', 'chronicleChoices',
   ]);
   const ARRAY_FIELDS = Object.freeze([
     'recruited', 'unlockedMaps', 'discoveredSectors', 'patrolVictories', 'journalSeen', 'cityProjects', 'achievements',
