@@ -11,6 +11,7 @@ import {
   getSectorTransitions,
   getWorldLayout,
 } from './world-layouts.js';
+import { buildExpeditionAtlas } from './expedition-atlas.js';
 import {
   CYCLE_LAWS,
   createNextCyclePlan,
@@ -48,6 +49,43 @@ import {
   } = SaveSystem;
   const BACKUP_SAVE_KEY = BACKUP_SAVE_KEYS[0];
   const ACCESSIBILITY_KEY = 'echobound_accessibility_v2';
+  // Un navigateur peut refuser jusqu'au getter localStorage. L'onglet reste exportable en mémoire.
+  const gameStorage = (() => {
+    const memory = new Map();
+    let persistent = true;
+    let backing = null;
+    const unavailable = () => { persistent = false; };
+    try { backing = globalThis.localStorage; } catch { unavailable(); }
+    if (!backing) unavailable();
+    return {
+      get persistent() { return persistent; },
+      useMemory() { unavailable(); },
+      getItem(key) {
+        if (persistent) {
+          try {
+            const value = backing.getItem(key);
+            if (value === null) memory.delete(key); else memory.set(key, String(value));
+            return value;
+          } catch { unavailable(); }
+        }
+        return memory.get(key) ?? null;
+      },
+      setItem(key, value) {
+        const text = String(value);
+        if (persistent) {
+          // Une écriture échouée doit laisser le stockage accessible au rollback transactionnel.
+          backing.setItem(key, text);
+        }
+        memory.set(key, text);
+      },
+      removeItem(key) {
+        if (persistent) {
+          backing.removeItem(key);
+        }
+        memory.delete(key);
+      },
+    };
+  })();
   const W = 960;
   const H = 540;
   const TAU = Math.PI * 2;
@@ -59,6 +97,7 @@ import {
   const chance = (probability) => Math.random() < probability;
   const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
   const deepClone = (value) => JSON.parse(JSON.stringify(value));
+  const hasOwn = (record, key) => Object.prototype.hasOwnProperty.call(record, key);
   const pct = (value, max) => `${clamp((value / Math.max(1, max)) * 100, 0, 100)}%`;
   const DEFAULT_SETTINGS = Object.freeze({
     reducedMotion: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches || false,
@@ -68,7 +107,7 @@ import {
 
   function readAccessibilitySettings() {
     try {
-      const parsed = JSON.parse(localStorage.getItem(ACCESSIBILITY_KEY) || '{}');
+      const parsed = JSON.parse(gameStorage.getItem(ACCESSIBILITY_KEY) || '{}');
       return {
         reducedMotion: Boolean(parsed.reducedMotion ?? DEFAULT_SETTINGS.reducedMotion),
         highContrast: Boolean(parsed.highContrast),
@@ -80,13 +119,16 @@ import {
   }
 
   function persistAccessibilitySettings(settings) {
+    const serialized = JSON.stringify({
+      reducedMotion: Boolean(settings.reducedMotion),
+      highContrast: Boolean(settings.highContrast),
+      largeText: Boolean(settings.largeText),
+    });
     try {
-      localStorage.setItem(ACCESSIBILITY_KEY, JSON.stringify({
-        reducedMotion: Boolean(settings.reducedMotion),
-        highContrast: Boolean(settings.highContrast),
-        largeText: Boolean(settings.largeText),
-      }));
+      gameStorage.setItem(ACCESSIBILITY_KEY, serialized);
     } catch {
+      gameStorage.useMemory();
+      gameStorage.setItem(ACCESSIBILITY_KEY, serialized);
       // Preferences remain active for the session when storage is unavailable.
     }
   }
@@ -265,6 +307,10 @@ import {
     coreSeed: { name: 'Graine de Cœur', icon: '✺', description: 'Catalyseur rare utilisé pour les plus hautes améliorations de la cité.', price: 0, usable: false },
   };
 
+  // The Core stocks essential expedition provisions only; recruited services keep
+  // their crafting, advanced inventory and resale roles.
+  const CORE_SUPPLIES = Object.freeze(['ration', 'medgel', 'ether']);
+
   const RESIDENTS = {
     brakk: {
       id: 'brakk', name: 'BRAKK-9', title: 'Forgeron des Carcasses', map: 'wastes', x: 705, y: 170,
@@ -357,7 +403,7 @@ import {
     rook: {
       id: 'rook', name: 'ROOK-Ø', title: 'Éclaireur Blindé', map: 'foundry', x: 770, y: 180,
       service: 'expedition', building: 'expedition', score: 10, style: 'drone', color: '#9ab7ff', level: 7,
-      requires: (g) => (g.state.regionWins.foundry || 0) >= 3,
+      requires: (g) => g.getRegionPatrolWinCount('foundry') >= 3,
       blocked: 'Trois sentinelles verrouillent ma sortie. Nettoie au moins trois patrouilles de la Fonderie.',
       intro: ['Zone dégagée. Dernier protocole : vérifier que tu n’es pas simplement la prochaine menace.'],
       recruit: 'Identification alliée confirmée. Je mènerai des expéditions hors-carte pour ravitailler la cité.',
@@ -733,7 +779,7 @@ import {
       const block = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' ']);
       window.addEventListener('keydown', (event) => {
         const key = event.key.toLowerCase();
-        const interactive = event.target instanceof Element && event.target.closest('button, a, input, textarea, select, [contenteditable="true"]');
+        const interactive = event.target instanceof Element && event.target.closest('button, a, input, textarea, select, summary, [contenteditable="true"]');
         if (interactive && key !== 'escape') return;
         if (block.has(event.key)) event.preventDefault();
         if (!this.down.has(key)) this.pressed.add(key);
@@ -814,7 +860,7 @@ import {
     constructor() {
       this.ctx = null;
       this.master = null;
-      this.muted = localStorage.getItem('echobound_muted') === '1';
+      this.muted = gameStorage.getItem('echobound_muted') === '1';
       this.director = new AudioDirector({
         seed: 'nox-arca-original-score-v2',
         settings: { muted: this.muted, master: 1, ambience: .58, sfx: 1 },
@@ -846,7 +892,11 @@ import {
 
     toggle() {
       this.muted = !this.muted;
-      localStorage.setItem('echobound_muted', this.muted ? '1' : '0');
+      try { gameStorage.setItem('echobound_muted', this.muted ? '1' : '0'); } catch {
+        gameStorage.useMemory();
+        gameStorage.setItem('echobound_muted', this.muted ? '1' : '0');
+        // Le son reste réglable pendant que le jeu signale le stockage indisponible.
+      }
       this.directorSettingsSignature = '';
       if (this.muted) this.ambientQueue = [];
       DOM.mute.textContent = this.muted ? '×' : '♪';
@@ -1108,7 +1158,7 @@ import {
       this.input = new InputManager();
       this.audio = new AudioEngine();
       this.state = null;
-      this.saveStore = createSaveStore(localStorage, {
+      this.saveStore = createSaveStore(gameStorage, {
         migrate: (candidate) => {
           this.assertSaveCandidate(candidate);
           return this.migrateState(candidate);
@@ -1154,6 +1204,7 @@ import {
       this.bindUi();
       this.buildStarterCards();
       this.refreshContinueButton();
+      this.refreshStorageWarning();
       this.loop = this.loop.bind(this);
       requestAnimationFrame(this.loop);
     }
@@ -1172,10 +1223,12 @@ import {
         document.querySelectorAll('[data-difficulty]').forEach((button) => button.classList.toggle('active', button.dataset.difficulty === 'standard'));
         DOM.title.classList.add('hidden');
         DOM.starter.classList.remove('hidden');
+        this.mode = 'starter';
+        requestAnimationFrame(() => DOM.starterCards.querySelector('button')?.focus());
       });
       document.getElementById('difficulty-select')?.addEventListener('click', (event) => {
         const button = event.target.closest('[data-difficulty]');
-        if (!button || !DIFFICULTIES[button.dataset.difficulty]) return;
+        if (!button || !hasOwn(DIFFICULTIES, button.dataset.difficulty)) return;
         this.selectedDifficulty = button.dataset.difficulty;
         document.querySelectorAll('[data-difficulty]').forEach((entry) => entry.classList.toggle('active', entry === button));
         this.audio.play('ui');
@@ -1184,6 +1237,8 @@ import {
         this.audio.play('cancel');
         DOM.starter.classList.add('hidden');
         DOM.title.classList.remove('hidden');
+        this.mode = 'title';
+        requestAnimationFrame(() => DOM.newGame.focus());
       });
       DOM.continueGame.addEventListener('click', () => {
         this.audio.play('ui');
@@ -1280,6 +1335,9 @@ import {
       window.addEventListener('beforeunload', () => {
         if (this.state) this.saveGame(false);
       });
+      window.addEventListener('pagehide', () => {
+        if (this.state) this.saveGame(false);
+      });
       document.addEventListener('visibilitychange', () => {
         if (document.hidden && this.state) this.saveGame(false);
       });
@@ -1313,13 +1371,22 @@ import {
         console.error('Impossible de lire le stockage des sauvegardes.', error);
       }
       DOM.continueGame.disabled = !hasSave;
-      DOM.continueGame.textContent = hasSave ? 'CONTINUER' : 'AUCUNE SAUVEGARDE';
+      DOM.continueGame.textContent = hasSave ? (gameStorage.persistent ? 'CONTINUER' : 'CONTINUER DANS CET ONGLET') : 'AUCUNE SAUVEGARDE';
+    }
+
+    refreshStorageWarning() {
+      if (gameStorage.persistent || this.storageNoticeShown) return;
+      this.storageNoticeShown = true;
+      const message = 'Stockage indisponible : partie conservée dans cet onglet uniquement. Exporte le JSON depuis Système avant de fermer ou recharger.';
+      const titleHelp = DOM.title.querySelector('.title-help');
+      if (titleHelp) titleHelp.textContent = message;
+      this.toast(message, 9000);
     }
 
     startNewGame(starterId, difficultyId = this.selectedDifficulty) {
       const starter = STARTERS.find((entry) => entry.id === starterId) || STARTERS[0];
       this.state = makeDefaultState(starter);
-      this.state.difficulty = DIFFICULTIES[difficultyId] ? difficultyId : 'standard';
+      this.state.difficulty = hasOwn(DIFFICULTIES, difficultyId) ? difficultyId : 'standard';
       document.body.classList.add('game-active');
       document.body.classList.remove('in-battle');
       this.mode = 'world';
@@ -1416,13 +1483,14 @@ import {
         && numericRecord(candidate.sanctuaryVisits)
         && Object.entries(candidate.flags).every(([key, value]) => (
           key === 'trackedResident'
-            ? typeof value === 'string' && Boolean(RESIDENTS[value])
+            ? typeof value === 'string' && hasOwn(RESIDENTS, value)
             : WORLD_SAVE_METADATA.flagKeys.has(key) && typeof value === 'boolean'
         ))
         && validContract
-        && Boolean(FORMS[candidate.partner.formId])
+        && hasOwn(DIFFICULTIES, candidate.difficulty)
+        && hasOwn(FORMS, candidate.partner.formId)
         && Array.isArray(candidate.partner.evolutions)
-        && candidate.partner.evolutions.every((formId) => Boolean(FORMS[formId]));
+        && candidate.partner.evolutions.every((formId) => hasOwn(FORMS, formId));
     }
 
     activateLoadedState(state, label = 'principale') {
@@ -1497,15 +1565,15 @@ import {
           integer: true,
         }),
       };
-      const recruited = uniqueKnown(parsed.recruited, (id) => typeof id === 'string' && Boolean(RESIDENTS[id]), Object.keys(RESIDENTS).length);
-      const unlockedMaps = uniqueKnown(['wastes', ...(Array.isArray(parsed.unlockedMaps) ? parsed.unlockedMaps : [])], (id) => Boolean(WORLD_LAYOUTS[id]) || id === 'void', REGION_IDS.length + 1);
+      const recruited = uniqueKnown(parsed.recruited, (id) => typeof id === 'string' && hasOwn(RESIDENTS, id), Object.keys(RESIDENTS).length);
+      const unlockedMaps = uniqueKnown(['wastes', ...(Array.isArray(parsed.unlockedMaps) ? parsed.unlockedMaps : [])], (id) => hasOwn(WORLD_LAYOUTS, id) || id === 'void', REGION_IDS.length + 1);
       const discoveredSectors = uniqueKnown(['city', ...(Array.isArray(parsed.discoveredSectors) ? parsed.discoveredSectors : []), mapId], (id) => SAVE_MAP_IDS.has(id), SAVE_MAP_IDS.size);
       const knownAchievementIds = new Set(ACHIEVEMENTS.map(({ id }) => id));
       const boolFlags = {
         ...base.flags,
         ...sanitizeBooleanRecord(sourceFlags, WORLD_SAVE_METADATA.flagKeys),
       };
-      if (typeof sourceFlags.trackedResident === 'string' && RESIDENTS[sourceFlags.trackedResident]) {
+      if (typeof sourceFlags.trackedResident === 'string' && hasOwn(RESIDENTS, sourceFlags.trackedResident)) {
         boolFlags.trackedResident = sourceFlags.trackedResident;
       }
       const newCycleBonus = boundedInteger(parsed.newCycleBonus, base.newCycleBonus, { min: 0, max: 10_000 });
@@ -1514,7 +1582,7 @@ import {
         version: VERSION,
         createdAt: boundedInteger(parsed.createdAt, base.createdAt, { min: 0, max: Number.MAX_SAFE_INTEGER }),
         savedAt: boundedInteger(parsed.savedAt, base.savedAt, { min: 0, max: Number.MAX_SAFE_INTEGER }),
-        difficulty: DIFFICULTIES[parsed.difficulty] ? parsed.difficulty : base.difficulty,
+        difficulty: hasOwn(DIFFICULTIES, parsed.difficulty) ? parsed.difficulty : base.difficulty,
         settings: {
           reducedMotion: strictBoolean(parsed.settings?.reducedMotion, base.settings.reducedMotion),
           highContrast: strictBoolean(parsed.settings?.highContrast, base.settings.highContrast),
@@ -1530,7 +1598,7 @@ import {
         partner: {
           name: boundedString(sourcePartner.name, base.partner.name, SAVE_VALUE_LIMITS.nameLength).toUpperCase(),
           starter: STARTERS.some(({ id }) => id === sourcePartner.starter) ? sourcePartner.starter : starter.id,
-          formId: FORMS[sourcePartner.formId] ? sourcePartner.formId : starter.formId,
+          formId: hasOwn(FORMS, sourcePartner.formId) ? sourcePartner.formId : starter.formId,
           level: boundedInteger(sourcePartner.level, base.partner.level, { min: 1, max: SAVE_VALUE_LIMITS.level }),
           xp: boundedInteger(sourcePartner.xp, base.partner.xp, { min: 0, max: SAVE_VALUE_LIMITS.counter }),
           maxHp,
@@ -1549,7 +1617,7 @@ import {
           careMistakes: boundedInteger(sourcePartner.careMistakes, base.partner.careMistakes, { min: 0, max: SAVE_VALUE_LIMITS.stat }),
           ageDays: boundedInteger(sourcePartner.ageDays, base.partner.ageDays, { min: 0, max: SAVE_VALUE_LIMITS.stat }),
           rebirths: boundedInteger(sourcePartner.rebirths, base.partner.rebirths, { min: 0, max: SAVE_VALUE_LIMITS.stat }),
-          evolutions: uniqueKnown(sourcePartner.evolutions, (formId) => typeof formId === 'string' && Boolean(FORMS[formId]), Object.keys(FORMS).length),
+          evolutions: uniqueKnown(sourcePartner.evolutions, (formId) => typeof formId === 'string' && hasOwn(FORMS, formId), Object.keys(FORMS).length),
         },
         credits: boundedInteger(parsed.credits, base.credits, { min: 0, max: SAVE_VALUE_LIMITS.counter }),
         inventory,
@@ -1585,7 +1653,7 @@ import {
           ...sanitizeBooleanRecord(parsed.cycleAnomalies, new Set(REGION_IDS)),
         },
         cycleEchoes: sanitizeChoiceRecord(parsed.cycleEchoes, WORLD_SAVE_METADATA.choiceIds),
-        cityProjects: uniqueKnown(parsed.cityProjects, (id) => typeof id === 'string' && Boolean(CITY_PROJECTS[id]), Object.keys(CITY_PROJECTS).length),
+        cityProjects: uniqueKnown(parsed.cityProjects, (id) => typeof id === 'string' && hasOwn(CITY_PROJECTS, id), Object.keys(CITY_PROJECTS).length),
         achievements: uniqueKnown(parsed.achievements, (id) => knownAchievementIds.has(id), knownAchievementIds.size),
         contract: null,
       };
@@ -1703,16 +1771,26 @@ import {
     }
 
     saveGame(showToast = true) {
-      if (!this.state) return;
+      // Pendant un combat, le disque conserve le checkpoint monde antérieur aux dépenses/dégâts.
+      if (!this.state || this.mode === 'battle') return false;
       try {
         this.state.version = VERSION;
         this.state.savedAt = Date.now();
         this.saveStore.save(this.state);
         this.refreshContinueButton();
-        if (showToast) this.toast('Sauvegarde effectuée · historique de secours sécurisé.');
+        this.refreshStorageWarning();
+        if (showToast) this.toast(gameStorage.persistent
+          ? 'Sauvegarde effectuée · historique de secours sécurisé.'
+          : 'Copie en mémoire seulement : télécharge le JSON avant de fermer ou recharger cet onglet.', 4200);
+        return gameStorage.persistent;
       } catch (error) {
-        console.error('Échec de sauvegarde avec restauration atomique.', error);
+        // createSaveStore a terminé son rollback sur disque avant le passage en mémoire.
+        if (error.code === 'STORAGE_WRITE_FAILED') gameStorage.useMemory();
+        if (!this.storageWriteErrorReported) console.error('Échec de sauvegarde avec restauration atomique.', error);
+        this.storageWriteErrorReported = true;
+        this.refreshStorageWarning();
         if (showToast) this.toast('Impossible d’écrire la sauvegarde. La version précédente a été préservée.', 4200);
+        return false;
       }
     }
 
@@ -1730,6 +1808,8 @@ import {
         this.toast('Sauvegarde importée et vérifiée. La partie précédente reste dans l’historique de secours.', 4800);
         return true;
       } catch (error) {
+        if (error.code === 'STORAGE_WRITE_FAILED') gameStorage.useMemory();
+        this.refreshStorageWarning();
         console.warn('Import de sauvegarde refusé avant écriture.', error);
         this.toast('Sauvegarde invalide ou incompatible. Aucune donnée n’a été modifiée.', 4500);
         return false;
@@ -1774,7 +1854,7 @@ import {
 
     restoreLatestBackup() {
       const candidates = BACKUP_SAVE_KEYS
-        .map((key, index) => ({ raw: localStorage.getItem(key), index: index + 1 }))
+        .map((key, index) => ({ raw: gameStorage.getItem(key), index: index + 1 }))
         .filter((entry) => entry.raw);
       for (const candidate of candidates) {
         try {
@@ -1807,6 +1887,7 @@ import {
     }
 
     update(dt) {
+      this.refreshStorageWarning();
       if (this.toastTimer > 0) {
         this.toastTimer -= dt;
         if (this.toastTimer <= 0) DOM.toast.classList.add('hidden');
@@ -1832,6 +1913,12 @@ import {
         this.updateGamepadUi(gamepad, DOM.accessibilityPanel);
         return;
       }
+      // Le dialogue peut couvrir le titre : la modale visible reçoit toujours les commandes.
+      if (!DOM.dialogue.classList.contains('hidden')) {
+        if (DOM.dialogueChoices.childElementCount) this.updateGamepadUi(gamepad, DOM.dialogue);
+        else if (this.input.consume(' ', 'enter', 'e') || gamepad.action) this.advanceDialogue();
+        return;
+      }
       if (this.mode === 'title' || this.mode === 'starter' || this.mode === 'ending') {
         const root = this.mode === 'starter' ? DOM.starter : this.mode === 'ending' ? DOM.ending : DOM.title;
         this.updateGamepadUi(gamepad, root);
@@ -1852,11 +1939,6 @@ import {
         this.checkAchievements();
       }
 
-      if (!DOM.dialogue.classList.contains('hidden')) {
-        if (DOM.dialogueChoices.childElementCount) this.updateGamepadUi(gamepad, DOM.dialogue);
-        else if (this.input.consume(' ', 'enter', 'e') || gamepad.action) this.advanceDialogue();
-        return;
-      }
       if (!DOM.menu.classList.contains('hidden') || !DOM.service.classList.contains('hidden')) {
         const root = !DOM.menu.classList.contains('hidden') ? DOM.menu : DOM.service;
         this.updateGamepadUi(gamepad, root);
@@ -1878,7 +1960,7 @@ import {
 
     updateGamepadUi(gamepad, root) {
       if (!root || (!gamepad.navX && !gamepad.navY && !gamepad.action)) return;
-      const controls = [...root.querySelectorAll('button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled)')]
+      const controls = [...root.querySelectorAll('button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary')]
         .filter((element) => element.getClientRects().length > 0);
       if (!controls.length) return;
       let index = Math.max(0, controls.indexOf(document.activeElement));
@@ -2182,6 +2264,7 @@ import {
         this.showDialogue('PROTOCOLE D’EXPÉDITION', [
           'Une région se traverse désormais en cinq secteurs reliés. Cherchez les passages lumineux aux bords de chaque zone et utilisez E, Espace ou le bouton Action.',
           'Les détours cachent des recrues et des décisions durables. Un sanctuaire précède chaque gardien ; sa victoire ouvre le dernier secteur et l’Éclat. Un raccourci permanent facilite ensuite le retour.',
+          'Le Journal du menu contient votre carnet de route : secteurs reconnus, passages et sceaux restants. Préparez vos réserves au Cœur avant de partir ; vous pourrez y acheter les soins essentiels.',
         ], () => this.saveGame(false));
       }
     }
@@ -2426,6 +2509,9 @@ import {
       }
       this.state.flags[shardFlag] = true;
       this.state.inventory.coreSeed += 1;
+      const finalGateOpened = this.checkRegionUnlocks(false);
+      this.checkAchievements();
+      this.saveGame(false);
       this.audio.play('recruit');
       this.flash = .75;
       this.spawnParticles(shard.x, shard.y, '#8de7ff', 34, 135);
@@ -2433,25 +2519,31 @@ import {
         `${shard.name} rejoint le Cœur. Une partie de l’histoire de Nox Arca redevient accessible.`,
         `Éclats réunis : ${this.getShardCount()} / 4. Chaque Éclat renforce aussi les services de la cité.`,
       ], () => {
-        this.checkRegionUnlocks();
-        this.checkAchievements();
-        this.saveGame(false);
+        if (finalGateOpened) this.showFinalUnlockDialogue();
+        else DOM.canvas.focus();
       });
     }
 
-    recruitResident(id) {
+    recruitResident(id, { deferPresentation = false, deferSave = false } = {}) {
       const resident = RESIDENTS[id];
-      if (!resident || this.state.recruited.includes(id)) return;
+      if (!hasOwn(RESIDENTS, id) || this.state.recruited.includes(id)) return null;
       this.state.recruited.push(id);
       this.state.inventory.ration += 1;
-      this.audio.play('recruit');
-      this.flash = 1;
-      this.showDialogue(resident.name, [resident.recruit, `Nouveau service à Nox Arca : ${BUILDINGS[resident.building]?.label || resident.title}.`], () => {
-        this.toast(`${resident.name} a rejoint Nox Arca · Cité ${this.getCityScore()}.`, 3200);
-        this.checkRegionUnlocks();
-        this.checkAchievements();
-        this.saveGame(false);
-      });
+      const finalGateOpened = this.checkRegionUnlocks(false);
+      this.checkAchievements();
+      if (!deferSave) this.saveGame(false);
+      // La présentation est facultative : quitter pendant le récit ne perd aucun service ni accès.
+      const present = () => {
+        this.audio.play('recruit');
+        this.flash = 1;
+        this.showDialogue(resident.name, [resident.recruit, `Nouveau service à Nox Arca : ${BUILDINGS[resident.building]?.label || resident.title}.`], () => {
+          this.toast(`${resident.name} a rejoint Nox Arca · Cité ${this.getCityScore()}.`, 3200);
+          if (finalGateOpened) this.showFinalUnlockDialogue();
+          else DOM.canvas.focus();
+        });
+      };
+      if (!deferPresentation) present();
+      return present;
     }
 
     getCityScore() {
@@ -2479,7 +2571,7 @@ import {
     }
 
     getDifficulty() {
-      return DIFFICULTIES[this.state?.difficulty] || DIFFICULTIES.standard;
+      return hasOwn(DIFFICULTIES, this.state?.difficulty) ? DIFFICULTIES[this.state.difficulty] : DIFFICULTIES.standard;
     }
 
     hasCityProject(id) {
@@ -2584,7 +2676,7 @@ import {
       return this.getCityScore() >= 100 && this.getShardCount() >= 4 && this.state.recruited.includes('khepri');
     }
 
-    checkRegionUnlocks() {
+    checkRegionUnlocks(showFinalDialogue = true) {
       const score = this.getCityScore();
       for (const unlock of REGION_UNLOCKS) {
         if (score >= unlock.score && !this.state.unlockedMaps.includes(unlock.map)) {
@@ -2596,12 +2688,18 @@ import {
       if (this.canEnterVoid() && !this.state.flags.finalUnlocked) {
         this.state.flags.finalUnlocked = true;
         this.state.unlockedMaps.push('void');
-        this.showDialogue('KHEPRI-7', [
+        if (showFinalDialogue) this.showFinalUnlockDialogue();
+        return true;
+      }
+      return false;
+    }
+
+    showFinalUnlockDialogue() {
+      this.showDialogue('KHEPRI-7', [
           'Les quatre Éclats chantent à l’unisson. Nox Arca a dépassé cent points d’écho.',
           'Le dernier sceau est ouvert. La Porte violette, au sud-est de la cité, mène au Cœur du Néant et à l’Architecte Pâle.',
           'N’y entre pas pour détruire. Entre pour prouver qu’une cité peut relier des mondes sans les dévorer.',
-        ]);
-      }
+      ]);
     }
 
     advanceTime(minutes, walking = false) {
@@ -2927,8 +3025,14 @@ import {
         { id: 'foundry', name: 'Fonderie des Veilleurs', unlocked: this.getCityScore() >= 70, text: 'Complexe industriel gardé par des sentinelles et des protocoles anciens.' },
         { id: 'void', name: 'Cœur du Néant', unlocked: this.canEnterVoid(), text: 'Dernière zone. L’Architecte Pâle y maintient le Grand Silence.' },
       ];
+      const currentRegion = this.getCurrentRegionId();
       DOM.menuContent.innerHTML = `
         <article class="data-card" style="margin-bottom:12px"><h3>OBJECTIF ACTUEL</h3><p style="color:var(--text)">${escapeHtml(this.getObjective())}</p></article>
+        <section class="expedition-journal" aria-label="Carnet de route des expéditions">
+          <h3>CARNET DE ROUTE</h3>
+          <p>Chaque région se traverse en cinq secteurs. Les lieux se révèlent à votre passage ; les victoires distinctes ouvrent les sceaux. Un raccourci ouvert reste disponible pour le retour.</p>
+          ${mapInfo.filter((map) => map.id !== 'void' && map.unlocked).map((map) => this.renderExpeditionAtlas(map.id, currentRegion === map.id)).join('')}
+        </section>
         ${cycle.cycleCount ? `<article class="data-card" style="margin-bottom:12px"><h3>CYCLE ${cycle.cycleCount} · ${cycle.lawName}</h3><p>Opposition +${cycle.enemyLevelBonus} niveaux au maximum · récompenses et pression plafonnées. Anomalies : ${anomalyNames.length ? anomalyNames.join(' · ') : 'aucune'}.</p></article>` : ''}
         <article class="data-card" style="margin-bottom:12px">
           <h3>CONTRAT DU CŒUR · JOUR ${contract.day}</h3>
@@ -2947,6 +3051,28 @@ import {
           ${LORE.map((entry, index) => `<article class="data-card"><h3>${this.getShardCount() > index || index === 0 ? entry.title : 'ARCHIVE CORROMPUE'}</h3><p>${this.getShardCount() > index || index === 0 ? entry.text : 'Réunir davantage d’Éclats mnésiques pour restaurer ce fragment.'}</p></article>`).join('')}
         </div>
       `;
+    }
+
+    renderExpeditionAtlas(regionId, current) {
+      const atlas = buildExpeditionAtlas(regionId, this.state);
+      if (!atlas) return '';
+      const e = escapeHtml;
+      return `<details class="expedition-atlas" ${current ? 'open' : ''}>
+        <summary><span>${e(atlas.name)}</span><small>${atlas.progress.discovered}/${atlas.progress.total} secteurs${current ? ' · VOUS ÊTES ICI' : ''}</small></summary>
+        <div class="atlas-body">
+          <p class="atlas-objective"><strong>Prochaine étape</strong><br>${e(atlas.nextObjective.text)}</p>
+          <ol class="atlas-route">
+            ${atlas.sectors.map((sector) => `<li class="atlas-sector ${sector.discovered ? '' : 'atlas-unknown'}" ${sector.current ? 'aria-current="location"' : ''}>
+              <div class="atlas-sector-heading"><span class="atlas-index" aria-hidden="true">${sector.index}</span><h4>${e(sector.title)}</h4>${sector.current ? '<span class="badge ok">ICI</span>' : ''}</div>
+              ${sector.patrols ? `<p>Patrouilles neutralisées : <strong>${sector.patrols.cleared}/${sector.patrols.total}</strong></p>` : ''}
+              ${sector.sanctuary ? `<p>Repos : ${e(sector.sanctuary.name)}</p>` : ''}
+              ${sector.guardian ? `<p>${e(sector.guardian.name)} · <strong>${sector.guardian.defeated ? 'vaincu' : 'gardien actif'}</strong></p>` : ''}
+              ${sector.shard ? `<p>${e(sector.shard.name)} · <strong>${sector.shard.collected ? 'Éclat acquis' : 'Éclat à récupérer'}</strong></p>` : ''}
+              ${sector.routes.length ? `<ul class="atlas-passages">${sector.routes.map((route) => `<li><span>${route.kind === 'shortcut' ? 'Raccourci' : 'Passage'} ${e(route.direction)} → ${e(route.destinationTitle)}</span><small class="${route.available ? 'atlas-open' : ''}">${route.available ? 'Ouvert' : e(route.reason)}</small></li>`).join('')}</ul>` : ''}
+            </li>`).join('')}
+          </ol>
+        </div>
+      </details>`;
     }
 
     renderCodexMenu() {
@@ -2979,7 +3105,7 @@ import {
     renderSystemMenu() {
       const saveCode = this.exportSave();
       const difficulty = this.getDifficulty();
-      const backupCount = BACKUP_SAVE_KEYS.filter((key) => localStorage.getItem(key)).length;
+      const backupCount = BACKUP_SAVE_KEYS.filter((key) => gameStorage.getItem(key)).length;
       const hasBackup = backupCount > 0;
       DOM.menuContent.innerHTML = `
         <div class="system-actions">
@@ -2997,6 +3123,7 @@ import {
           ${this.state.finalBossDefeated ? '<button data-menu-action="new-cycle">CHOISIR UN NOUVEAU CYCLE +</button>' : ''}
           <button data-menu-action="return-title">RETOUR À L’ÉCRAN TITRE</button>
         </div>
+        ${gameStorage.persistent ? '' : '<article class="data-card"><h3>STOCKAGE NON PERSISTANT</h3><p>Cette partie et ses secours existent uniquement dans cet onglet. Télécharge le JSON ou copie le code avant de fermer ou recharger. Tu pourras réimporter cet export lors de la prochaine session.</p></article>'}
         <article class="data-card" style="margin-top:12px">
           <h3>DIFFICULTÉ · ${difficulty.name}</h3><p>${difficulty.description} La difficulté est fixée pour ce cycle et sera conservée dans la sauvegarde.</p>
         </article>
@@ -3005,7 +3132,7 @@ import {
           <p>Copie ce code Base64 ou télécharge le JSON pour transférer ta partie. Les deux formats sont vérifiés avant tout import.</p>
           <textarea class="save-code" readonly>${escapeHtml(saveCode)}</textarea>
         </article>
-        <article class="data-card" style="margin-top:12px"><h3>COMMANDES</h3><p>ZQSD / WASD / flèches : déplacement · E / Espace : interaction · M : menu · Échap : fermer · Tab : navigation d’interface · 1 à 6 : commandes de combat · manette et tactile pris en charge.</p><p>Version ${VERSION} · sauvegarde automatique toutes les 30 secondes · trois copies de secours rotatives avec restauration atomique.</p></article>
+        <article class="data-card" style="margin-top:12px"><h3>COMMANDES</h3><p>ZQSD / WASD / flèches : déplacement · E / Espace : interaction · M : menu · Échap : fermer · Tab : navigation d’interface · 1 à 6 : commandes de combat · manette et tactile pris en charge.</p><p>Version ${VERSION} · sauvegarde automatique toutes les 30 secondes hors combat · trois copies de secours rotatives avec restauration atomique.</p><p>Quitter un combat reprend au point enregistré avant l’affrontement : PV, PE et objets sont restaurés à leur état d’entrée, sans récompense. La victoire ou la défaite enregistre ensuite son résultat.</p></article>
       `;
     }
 
@@ -3146,6 +3273,11 @@ import {
         html += this.serviceButton('sleep', 'Dormir jusqu’au matin', 'Restaure PV et PE, réduit presque toute la fatigue et fait avancer le temps. Une récupération complète est possible une fois par jour.', alreadySlept ? 'DÉJÀ REPOSÉ AUJOURD’HUI' : 'GRATUIT', alreadySlept);
         html += this.serviceButton('feed', 'Donner une ration', `Faim actuelle : ${Math.round(p.hunger)} / 100.`, `RATIONS : ${this.state.inventory.ration || 0}`, (this.state.inventory.ration || 0) <= 0);
         html += this.serviceButton('core-heal', 'Synchronisation du Cœur', 'Restaure 35 % des PV et PE sans faire passer la journée.', '25 CRÉDITS', this.state.credits < 25 || (p.hp >= p.maxHp && p.mp >= p.maxMp));
+        for (const id of CORE_SUPPLIES) {
+          const item = ITEMS[id];
+          const count = Number(this.state.inventory[id] || 0);
+          html += this.serviceButton(`core-supply:${id}`, `Provision · ${item.name}`, `${item.description} Stock du duo : ${count}.`, `${item.price} CRÉDITS`, this.state.credits < item.price || count >= SAVE_VALUE_LIMITS.counter);
+        }
         html += this.serviceButton('save', 'Sauvegarder', 'Écrit immédiatement la progression dans le navigateur.', 'AUTOMATIQUE');
         html += this.serviceButton('rebirth', 'Renaissance volontaire', 'Recommence au stade I en conservant une partie des statistiques, du lien et toutes les infrastructures.', p.ageDays >= 10 ? 'DISPONIBLE' : `ÂGE ${p.ageDays}/10`, p.ageDays < 10);
         for (const project of Object.values(CITY_PROJECTS)) {
@@ -3252,6 +3384,8 @@ import {
         this.useItem('ration');
       } else if (action === 'core-heal') {
         if (this.spendCredits(25)) { p.hp = clamp(p.hp + p.maxHp * .35, 0, p.maxHp); p.mp = clamp(p.mp + p.maxMp * .35, 0, p.maxMp); this.audio.play('heal'); }
+      } else if (action.startsWith('core-supply:')) {
+        this.purchaseCoreSupply(action.slice('core-supply:'.length));
       } else if (action === 'rebirth') {
         this.confirmRebirth();
         return;
@@ -3329,6 +3463,24 @@ import {
       this.saveGame(false);
     }
 
+    purchaseCoreSupply(id) {
+      // Revalidate at transaction time: a stale/forged button never creates free
+      // stock, negative credits, remote purchases or items outside this offer.
+      if (!this.state || this.mode !== 'world' || this.state.map !== 'city' || this.serviceType !== 'core' || !CORE_SUPPLIES.includes(id)) return false;
+      const item = ITEMS[id];
+      const price = item.price;
+      const credits = this.state.credits;
+      const count = this.state.inventory[id] ?? 0;
+      if (!Number.isSafeInteger(price) || price <= 0 || !Number.isFinite(credits) || credits < price || !Number.isSafeInteger(count) || count < 0 || count >= SAVE_VALUE_LIMITS.counter) {
+        this.toast('Provision indisponible : vérifiez les crédits et la capacité de stockage.');
+        return false;
+      }
+      this.state.credits = credits - price;
+      this.state.inventory[id] = count + 1;
+      this.toast(`${item.name} préparé pour l’expédition.`);
+      return true;
+    }
+
     spendCredits(amount) {
       if (this.state.credits < amount) { this.toast('Crédits insuffisants.'); return false; }
       this.state.credits -= amount; return true;
@@ -3395,11 +3547,14 @@ import {
         this.showDialogue('PROTOCOLE DU LIEN', [
           'Un combat se gagne en donnant des ordres, pas en contrôlant directement votre partenaire. Attaquer, Technique, Défendre, Encourager et Soin ont chacun un rôle ; les touches 1 à 6 les sélectionnent aussi.',
           'La faim, la fatigue, le moral, la discipline et le lien influencent l’obéissance. Chaque échange remplit la Synchronisation : à 100 %, l’Unisson déclenche un pouvoir propre à la forme actuelle.',
+          'Quitter un combat reprend au point enregistré avant l’affrontement, avec les PV, PE et objets d’entrée. Aucune récompense n’est accordée avant une victoire résolue.',
         ], () => {
-          this.saveGame(false);
           this.startBattle(enemy);
         });
         return;
+      }
+      if (!this.saveGame(false)) {
+        this.toast('Enregistrement indisponible : combat possible, mais recharger perdra les progrès depuis la dernière sauvegarde. Exporte ta partie dès que possible.', 8000);
       }
       this.closeOverlays();
       DOM.prompt.classList.add('hidden');
@@ -3613,7 +3768,8 @@ import {
             : p;
         const spiritDamage = profile.scaling === 'spirit' || profile.scaling === 'hybrid';
         const enemyWasGuarding = consumeGuard(b, 'enemyGuard');
-        const damage = this.calculateDamage(techniqueActor, b.enemy, profile.damageMultiplier, spiritDamage, enemyWasGuarding);
+        const guardBroken = enemyWasGuarding && profile.effect.breaksEnemyGuard === true;
+        const damage = this.calculateDamage(techniqueActor, b.enemy, profile.damageMultiplier, spiritDamage, enemyWasGuarding && !guardBroken, profile);
         const resolution = resolveTechnique({
           formId: p.formId,
           actor: p,
@@ -3626,6 +3782,7 @@ import {
         this.spawnParticles(685, 240, form.color, 30, 150);
         this.gainBattleSync(profile.syncGain + (damage.critical ? 5 : 0));
         const effectNotes = [];
+        if (guardBroken) effectNotes.push('garde ennemie brisée');
         if (resolution.effect.hpRestored) effectNotes.push(`+${Math.round(resolution.effect.hpRestored)} PV`);
         if (resolution.effect.mpRestored) effectNotes.push(`+${Math.round(resolution.effect.mpRestored)} PE`);
         if (resolution.effect.enemyPowerReduced) effectNotes.push('puissance ennemie réduite');
@@ -3715,11 +3872,13 @@ import {
       b.timer = .72;
     }
 
-    calculateDamage(attacker, defender, multiplier = 1, spirit = false, guarded = false) {
+    calculateDamage(attacker, defender, multiplier = 1, spirit = false, guarded = false, technique = null) {
       const attackStat = spirit ? attacker.spirit : attacker.power;
-      const defenseStat = defender.guard || 0;
+      const guardPierce = clamp(Number(technique?.guardPierce) || 0, 0, 1);
+      const defenseStat = (defender.guard || 0) * (1 - guardPierce);
       const speedDiff = (attacker.speed || 0) - (defender.speed || 0);
-      const critical = chance(clamp(.06 + speedDiff * .006, .03, .27));
+      const criticalBonus = clamp(Number(technique?.criticalBonus) || 0, 0, .27);
+      const critical = chance(clamp(.06 + speedDiff * .006, .03, .27) + criticalBonus);
       let raw = attackStat * (spirit ? 1.65 : 1.45) * multiplier + (attacker.level || 1) * 2.7 - defenseStat * (spirit ? .42 : .58) + rand(-4, 6);
       if (critical) raw *= 1.5;
       if (guarded) raw *= .42;
@@ -3806,28 +3965,33 @@ import {
       if (enemy.arena) this.state.arenaWins += 1;
       this.updateDailyContract(enemy);
       const progress = this.gainXp(enemy.xp);
+      // Tous les effets de victoire précèdent la sauvegarde et les dialogues interruptibles.
+      if (enemy.final) {
+        this.state.finalBossDefeated = true;
+        this.state.flags.endingSeen = false;
+      }
+      let presentRecruitment = null;
+      if (enemy.recruitId && !this.state.recruited.includes(enemy.recruitId)) {
+        for (const [itemId, amount] of Object.entries(enemy.recruitConsume || {})) {
+          this.state.inventory[itemId] = Math.max(0, Number(this.state.inventory[itemId] || 0) - Number(amount || 0));
+        }
+        presentRecruitment = this.recruitResident(enemy.recruitId, { deferPresentation: true, deferSave: true });
+      }
       this.checkAchievements();
       this.updateHud();
       this.saveGame(false);
 
       const afterProgress = () => {
         if (enemy.final) {
-          this.state.finalBossDefeated = true;
-          this.state.flags.endingSeen = false;
-          this.checkAchievements();
-          this.saveGame(false);
           this.showEnding();
-        } else if (enemy.recruitId) {
-          for (const [itemId, amount] of Object.entries(enemy.recruitConsume || {})) {
-            this.state.inventory[itemId] = Math.max(0, Number(this.state.inventory[itemId] || 0) - Number(amount || 0));
-          }
-          this.recruitResident(enemy.recruitId);
+        } else if (presentRecruitment) {
+          presentRecruitment();
         } else if (enemy.guardianFlag) {
           const layout = WORLD_LAYOUTS[enemy.guardianRegion];
           this.showDialogue('SCEAU RÉGIONAL ROMPU', [
             `${enemy.name} reconnaît votre lien. La chambre de l’Éclat est désormais accessible.`,
             layout ? `Poursuivez jusqu’au dernier secteur de ${layout.name}. Le raccourci du sanctuaire peut aussi être ouvert pour les prochains voyages.` : 'La route mnésique est ouverte.',
-          ], () => this.saveGame(false));
+          ]);
         } else {
           const lootText = enemy.loot ? ` · +${ITEMS[enemy.loot]?.name}` : '';
           this.toast(`Victoire · +${enemy.xp} XP · +${enemy.actualCredits || enemy.credits} crédits${lootText}`, 3200);
@@ -3868,7 +4032,6 @@ import {
         `Le Cœur a rappelé votre lien avant sa rupture. ${lost ? `${lost} crédits ont été perdus pendant l’extraction.` : 'L’Arène a couvert le coût de l’extraction.'}`,
         'La défaite n’efface rien : entraîne ton partenaire, soigne ses besoins ou recrute de nouveaux services avant de repartir.',
       ]);
-      this.saveGame(false);
     }
 
     gainXp(amount) {
@@ -4563,7 +4726,6 @@ import {
         <span>JOUR ${formatTime(this.state.timeMinutes).day}</span>
       `;
       this.audio.play('recruit');
-      this.saveGame(false);
     }
 
     applyCycleEchoes(choices = {}) {
@@ -4665,7 +4827,7 @@ import {
       ['shard_wastes', 'shard_hive', 'shard_fog', 'shard_foundry'].forEach((id) => { game.state.flags[id] = true; });
       game.checkRegionUnlocks(); game.updateHud(); game.saveGame(false);
     },
-    clearSave: () => localStorage.removeItem(SAVE_KEY),
+    clearSave: () => gameStorage.removeItem(SAVE_KEY),
   };
 
 })();

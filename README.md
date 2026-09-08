@@ -8,6 +8,8 @@ Production : [echobound.vercel.app](https://echobound.vercel.app)
 
 Les quatre régions forment désormais de véritables expéditions de cinq secteurs chacune, soit vingt cartes distinctes autour de Nox Arca. Les passages entre secteurs, détours narratifs, patrouilles, sanctuaires, gardiens et raccourcis persistants donnent à chaque territoire une progression propre. La cité reste le centre vivant de la campagne et s’enrichit grâce aux recrues ramenées des régions.
 
+Le Journal contient un carnet de route progressif : il révèle uniquement les secteurs visités, leurs patrouilles neutralisées et leurs passages. Son prochain objectif tient compte des sceaux de deux puis cinq victoires distinctes et indique les retours utiles. Avant de repartir, le Cœur propose des rations, gels de soin et condensats d’éther contre des crédits ; les habitants conservent leurs services spécialisés.
+
 Le jeu se contrôle au clavier, à la manette ou avec les commandes tactiles. Les options intégrées couvrent notamment le mouvement réduit, le contraste renforcé, l’agrandissement du texte et les réglages audio.
 
 ## Architecture
@@ -16,6 +18,7 @@ La version web est une PWA statique, sans dépendance d’exécution ni service 
 
 - `src/game.js` orchestre la campagne, les écrans et la boucle de jeu ;
 - `src/world-layouts.js` décrit les quatre expéditions et leurs vingt secteurs ;
+- `src/expedition-atlas.js` calcule le carnet et le guidage sans modifier la sauvegarde ni révéler les lieux inconnus ;
 - `src/combat-rules.js` porte les techniques propres aux formes, la garde, l’Unisson et la seconde phase du boss final ;
 - `src/progression-rules.js` porte l’évolution liée aux soins et les lois du Nouveau Cycle+ ;
 - `src/save-system.js` gère validation, migrations et sauvegardes de secours ;
@@ -31,6 +34,10 @@ Le jeu doit être servi en HTTP pour activer correctement les modules ES et le s
 ## Sauvegardes
 
 La campagne est enregistrée localement et accepte les sauvegardes historiques 1.0 et 2.0 grâce aux migrations intégrées. Trois copies de secours rotatives protègent les états précédents.
+
+Les combats ont un point de reprise enregistré à l’entrée : quitter pendant l’affrontement revient à cet état, avec ses PV, PE et objets. Recrutements, coûts et résultats sont enregistrés avant les dialogues de victoire, pour ne pas dépendre de leur lecture complète.
+
+Si le navigateur refuse le stockage, un avertissement signale le fonctionnement en mémoire seulement. Le jeu et l’export restent accessibles, mais il faut télécharger le JSON avant de fermer ou recharger l’onglet. Une panne d’écriture laisse d’abord le gestionnaire restaurer les sauvegardes précédentes avant de basculer en mémoire.
 
 Le menu permet :
 
@@ -56,6 +63,8 @@ npm run check
 ```
 
 Les tests couvrent le combat, la progression, l’audio, les sauvegardes, la sécurité des imports et les vingt secteurs. La validation PWA découvre dynamiquement tous les fichiers dans `src/` et `assets/`, contrôle le graphe des imports, impose leur précache, vérifie la cohérence des versions plateforme/cache et confirme l’empreinte du standalone canonique à la source. Le build recopie uniquement la surface d’exécution modulaire dans `dist/`, puis la valide à nouveau octet par octet.
+
+Le harnais de `tests/helpers/game-harness.mjs` exécute les vraies méthodes du moteur avec une source aléatoire reproductible et un stockage isolé. Le dessin, le son et la boucle du navigateur y sont remplacés : ces tests vérifient les transactions et la progression, mais ne remplacent pas les essais visuels, tactiles et clavier en navigateur.
 
 ## Provenance
 

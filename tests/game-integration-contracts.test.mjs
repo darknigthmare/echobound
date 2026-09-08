@@ -76,7 +76,6 @@ test('les tutoriels expédition et combat sont des portes one-shot persistées',
     'if (!this.state.flags.combatTutorialSeen)',
     'this.state.flags.combatTutorialSeen = true',
     "this.showDialogue('PROTOCOLE DU LIEN'",
-    'this.saveGame(false)',
     'this.startBattle(enemy)',
     'return',
   ]);
@@ -98,8 +97,8 @@ test('la migration résout les alias, sécurise la position et assainit les form
     'merged.player.x = invalidPosition ? spawn.x : safeX',
     'merged.player.y = invalidPosition ? spawn.y : safeY',
   ]);
-  assert.match(migration, /formId: FORMS\[sourcePartner\.formId\] \? sourcePartner\.formId : starter\.formId/);
-  assert.match(migration, /evolutions: uniqueKnown\(sourcePartner\.evolutions, \(formId\) => typeof formId === 'string' && Boolean\(FORMS\[formId\]\)/);
+  assert.match(migration, /formId: hasOwn\(FORMS, sourcePartner\.formId\) \? sourcePartner\.formId : starter\.formId/);
+  assert.match(migration, /evolutions: uniqueKnown\(sourcePartner\.evolutions, \(formId\) => typeof formId === 'string' && hasOwn\(FORMS, formId\)/);
   assert.match(migration, /if \(!merged\.partner\.evolutions\.includes\(merged\.partner\.formId\)\) merged\.partner\.evolutions\.unshift\(merged\.partner\.formId\)/);
   assert.match(migration, /expeditionChoices: sanitizeChoiceRecord\(parsed\.expeditionChoices, WORLD_SAVE_METADATA\.choiceIds\)/);
 });

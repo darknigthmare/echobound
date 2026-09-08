@@ -1,6 +1,6 @@
 /* ECHObound — service worker versionné et autonome. */
 const CACHE_PREFIX = 'echobound-';
-const CACHE_VERSION = '2.0.0-pwa.3';
+const CACHE_VERSION = '2.0.0-pwa.4';
 const CACHE_NAME = `${CACHE_PREFIX}${CACHE_VERSION}`;
 
 const PRECACHE_PATHS = Object.freeze([
@@ -11,6 +11,7 @@ const PRECACHE_PATHS = Object.freeze([
   './src/styles.css',
   './src/platform.js',
   './src/game.js',
+  './src/expedition-atlas.js',
   './src/audio-director.js',
   './src/combat-rules.js',
   './src/progression-rules.js',

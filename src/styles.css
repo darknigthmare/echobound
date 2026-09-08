@@ -183,6 +183,9 @@ body.game-active:has(#menu:not(.hidden)) #touch-controls,
 body.game-active:has(#service:not(.hidden)) #touch-controls,
 body.game-active:has(#accessibility-panel:not(.hidden)) #touch-controls { display: none; }
 
+/* Modal controls must not be obscured by floating audio/fullscreen buttons. */
+body:has(#menu:not(.hidden), #service:not(.hidden), #dialogue:not(.hidden), #accessibility-panel:not(.hidden)) :is(#mute-button, #fullscreen-button) { display: none; }
+
 @media (pointer: coarse), (max-width: 850px) {
   body.game-active:not(.in-battle) #touch-controls { display: flex; }
   #prompt { bottom: 88px; }
@@ -232,12 +235,39 @@ body.game-active:has(#accessibility-panel:not(.hidden)) #touch-controls { displa
 
 body.high-contrast { --bg: #000; --panel: rgba(0,0,0,.97); --text: #fff; --muted: #e3e8f2; --line: rgba(255,255,255,.42); }
 body.high-contrast button:focus-visible { outline-color: #fff; box-shadow: 0 0 0 4px #000, 0 0 0 7px #fff; }
-body.large-text { font-size: 118%; }
+/* Scale the rem-based interface, not only inherited body text. */
+html:has(body.large-text) { font-size: 118%; }
 body.reduced-motion *, body.reduced-motion *::before, body.reduced-motion *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
 .project-complete { border-color: rgba(139,240,178,.38) !important; background: rgba(139,240,178,.08) !important; }
 .codex-progress { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 14px; }
 .codex-entry.locked { opacity: .55; filter: grayscale(.55); }
 .sync-ready { border-color: var(--amber) !important; box-shadow: 0 0 16px rgba(255,211,107,.22); }
+
+.expedition-journal { margin-bottom: 18px; }
+.expedition-journal > h3 { color: var(--cyan); font-size: .8rem; letter-spacing: .12em; }
+.expedition-journal p { font-size: .75rem; line-height: 1.65; color: var(--muted); }
+.expedition-atlas { border: 1px solid var(--line); border-radius: 10px; margin: 10px 0; background: rgba(5,8,16,.55); }
+.expedition-atlas summary { cursor: pointer; padding: 14px; min-height: 48px; color: var(--text); font-size: .75rem; font-weight: 800; }
+.expedition-atlas summary small { display: block; color: var(--cyan); margin: 6px 0 0 18px; font-size: .68rem; }
+.expedition-atlas summary:focus-visible { outline: 3px solid var(--cyan); outline-offset: 2px; border-radius: 8px; }
+.atlas-body { padding: 0 14px 14px; }
+.atlas-objective { padding: 12px; border-left: 3px solid var(--amber); background: rgba(255,201,117,.06); }
+.atlas-objective strong { color: var(--amber); }
+.atlas-route { list-style: none; margin: 0; padding: 0 0 0 8px; }
+.atlas-sector { position: relative; padding: 12px 0 18px 22px; border-left: 2px solid var(--line); }
+.atlas-sector:last-child { padding-bottom: 4px; }
+.atlas-sector-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.atlas-sector h4 { margin: 0; font-size: .72rem; line-height: 1.5; overflow-wrap: anywhere; }
+.atlas-index { position: absolute; left: -13px; width: 24px; height: 24px; display: grid; place-items: center; background: #142333; border: 1px solid var(--cyan); border-radius: 50%; color: var(--text); font-size: .65rem; }
+.atlas-sector[aria-current="location"] { border-color: var(--cyan); }
+.atlas-sector[aria-current="location"] .atlas-index { background: var(--cyan); color: #071018; }
+.atlas-sector p { margin: 6px 0; }
+.atlas-unknown { color: var(--muted); }
+.atlas-unknown .atlas-index { border-style: dashed; border-color: var(--muted); background: #090e17; }
+.atlas-passages { list-style: none; padding: 0; margin: 8px 0 0; }
+.atlas-passages li { border-top: 1px solid var(--line); padding: 8px 0 2px; font-size: .7rem; line-height: 1.5; overflow-wrap: anywhere; }
+.atlas-passages small { display: block; color: var(--amber); font-size: .68rem; }
+.atlas-passages .atlas-open { color: #8bf0b2; }
 
 .sr-only {
   position: absolute !important;

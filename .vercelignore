@@ -1,0 +1,6 @@
+# Only source needed by the remote build is uploaded; credentials stay local.
+.env*
+.git
+.vercel
+node_modules
+dist

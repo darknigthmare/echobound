@@ -24,7 +24,7 @@ test('l’import fichier expose un contrôle accessible et limité aux formats t
 });
 
 test('le jeu délègue les écritures et imports au stockage atomique', () => {
-  assert.match(game, /createSaveStore\(localStorage/);
+  assert.match(game, /createSaveStore\(gameStorage/);
   assert.match(game, /this\.saveStore\.save\(this\.state\)/);
   assert.match(game, /this\.saveStore\.importSave\(payload\)/);
   assert.match(game, /this\.saveStore\.exportSave\(this\.state, format\)/);
